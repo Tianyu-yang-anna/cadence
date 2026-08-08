@@ -14,8 +14,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/bootstrap.sh"
 start_heartbeat
 log "train start run=$RUN_NAME config=$CONFIG extra=[$EXTRA_ARGS]"
 
-ensure_env || { log "ABORT: env"; exit 1; }
-ensure_data || { log "ABORT: data"; exit 1; }
+# SKIP_ENSURE=1: a parent script (e.g. extra4_entry.sh workers) already ran
+# ensure_env/ensure_data once for the whole node
+if [ "${SKIP_ENSURE:-0}" != "1" ]; then
+  ensure_env || { log "ABORT: env"; exit 1; }
+  ensure_data || { log "ABORT: data"; exit 1; }
+fi
 
 FULL_RUN_NAME="vqvae_wt103_$RUN_NAME"
 RUN_DIR="$LOCAL_ROOT/runs/$FULL_RUN_NAME"
@@ -67,8 +71,14 @@ sync_once() {
 SIDECAR_PID=$!
 trap 'kill "$SIDECAR_PID" "$HB_PID" 2>/dev/null' EXIT
 
-# multi-GPU node -> torchrun DDP; single GPU (the default plan) -> plain python
-NPROC=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')
+# multi-GPU node -> torchrun DDP; single GPU (the default plan) -> plain python.
+# When CUDA_VISIBLE_DEVICES is set (worker mode), respect it instead of the
+# node's physical GPU count.
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+  NPROC=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F, '{print NF}')
+else
+  NPROC=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')
+fi
 if [ "${NPROC:-1}" -gt 1 ]; then
   log "detected $NPROC GPUs; launching torchrun DDP"
   LAUNCH=("$VENVS/main/bin/torchrun" --standalone --nproc_per_node="$NPROC")
