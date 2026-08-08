@@ -88,7 +88,13 @@ def main():
             "seq_len": 256, "packing": "contiguous", "splits": {}}
     expected_docs = {"train": 28475, "val": 60, "test": 60}  # official article counts
     for hf_split, name in _SPLIT_FILES.items():
-        lines = ds[hf_split]["text"]
+        # materialize the column ONCE via arrow: datasets>=5 returns a lazy
+        # Column whose per-item access is O(table chunks) — split_docs does
+        # ~3 lookups/line and would take HOURS on the 1.8M-line train split
+        try:
+            lines = ds[hf_split].data.column("text").to_pylist()
+        except Exception:
+            lines = list(ds[hf_split]["text"])
         docs = split_docs(lines)
         stream = encode_docs(docs, tokenizer, eos_id, args.batch_size)
         stream.tofile(out / f"{name}.bin")
