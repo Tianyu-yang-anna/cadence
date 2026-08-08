@@ -60,3 +60,40 @@ The base (scale_dropout_p=0) run answers "does the hierarchy emerge
 naturally?"; the sd05 run answers "can it be made to exist?" — only in sd05 is
 the truncation table fully meaningful, because its decoder has seen truncated
 prefixes during training.
+
+## Results (50k steps, WikiText-103 test, 2026-08-08)
+
+Runs: base = 16672668523916, sd05 = 357979675156172 (1xH100 each, ~6.5 h,
+no resume needed). Full JSONs in `$VOL/results/vqvae_wt103_{base,sd05}/`.
+
+| test set | base (p=0) | sd05 (p=0.5) |
+|---|---|---|
+| full recon token acc | **99.79%** | **99.76%** |
+| full recon CE / PPL | 0.011 / 1.011 | 0.012 / 1.012 |
+| decode q1 only: acc (CE) | 1.2% (14.4) | 5.1% (6.96) |
+| decode q1+q2: acc (CE) | 0.9% (14.4) | 6.1% (6.68) |
+| decode q1+q2+q4: acc (CE) | 0.9% (14.4) | **6.7% (6.48)** |
+| energy removed l=1/2/4/256 | .59/.001/.001/.87 | .34/.19/.15/.84 |
+| global codebook active | 96.1% | 99.7% |
+
+Findings:
+1. **Reconstruction gate passed in both runs** (>=99.5% held-out token
+   accuracy at c=1) — the multi-scale residual discrete bottleneck supports
+   near-lossless text reconstruction; scale dropout costs only 0.03pp.
+2. **Hierarchy does NOT emerge naturally**: base coarse scales remove ~0.1%
+   energy (l=2/4) and their prefixes decode to ~1% acc with CE *above*
+   unconditional (decoder is OOD on prefixes). base l=1 removes 59% energy
+   yet is undecodable — energy removed != decodable information.
+3. **Hierarchy CAN be partially forced**: sd05 shows a monotone truncation
+   curve (5.1% -> 6.1% -> 6.7%; CE 6.96 -> 6.48) and a real energy ladder
+   (.34/.19/.15). Qualitatively, q1 decodes to unconditional filler; q1+q2+q4
+   recovers crude global structure (e.g. detects the heading at window start).
+   Absolute levels are budget-limited: 7 coarse codes (~63 nats) for a
+   256-token window.
+4. **Codebook healthy in both** (usage-based revival): 96-99.7% of 8192 codes
+   active globally; the shared codebook self-partitions by scale (coarse/fine
+   Jaccard ~0; sd05 scales 2&4 share 88%).
+
+Next (not yet run): schedule ablations [256]/[4,256]/[2,4,256] via
+`--set quantizer.scales=...`; planner-friendliness probes (tiny AR on scale
+tokens, per-scale entropy); richer coarse budgets (e.g. [1,2,4,8,16,256]).
