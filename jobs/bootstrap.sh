@@ -9,6 +9,14 @@
 
 export VOL=/Volumes/sandbox_ai/u_tianyuy/cadence
 export LOCAL_ROOT=/tmp/cadence_local
+
+# fail fast if the UC volume itself is missing — mkdir can create dirs INSIDE
+# a volume but never the volume; without this every cp fails silently
+if [ ! -d "$VOL" ]; then
+  echo "FATAL: UC volume $VOL does not exist. Create it once from the Mac:"
+  echo "  databricks volumes create sandbox_ai u_tianyuy cadence MANAGED -p tianyuy-ws"
+  exit 1
+fi
 export CODE="${CODE_SOURCE_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 export JOB_TAG="${JOB_TAG:-job}"
 
