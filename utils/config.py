@@ -37,8 +37,14 @@ class ModelConfig:
 @dataclass
 class RevivalConfig:
     enabled: bool = True
-    threshold: float = 1.0          # EMA cluster_size below this counts as dead
-    interval: int = 100             # in VQ update calls (shared codebook: len(scales) calls/step)
+    # dead = fewer than `threshold` RAW assignments within one revival window
+    # (1.0 -> "never used"); deliberately NOT based on EMA cluster_size, whose
+    # total mass equals mean-assignments-per-call and cannot support an
+    # absolute threshold at K=8192
+    threshold: float = 1.0
+    # window length in VQ update calls (shared codebook: len(scales) calls per
+    # micro-batch forward)
+    interval: int = 100
 
 
 @dataclass

@@ -22,14 +22,20 @@ RUN_DIR="$LOCAL_ROOT/runs/$FULL_RUN_NAME"
 VCK="$VOL/checkpoints/$FULL_RUN_NAME"
 mkdir -p "$RUN_DIR" "$VCK"
 
-# --- restore latest ckpt from Volume for resume ---
-if [ -f "$VCK/latest.txt" ]; then
-  latest=$(tr -d '[:space:]' < "$VCK/latest.txt")
-  if [ -n "$latest" ] && [ -f "$VCK/$latest" ]; then
-    log "resume: restoring $latest from Volume"
-    cp -f "$VCK/$latest" "$RUN_DIR/$latest"
-    printf '%s\n' "$latest" > "$RUN_DIR/latest.txt"
-  fi
+# --- restore latest ckpt (+ jsonl history) from Volume for resume ---
+latest=""
+[ -f "$VCK/latest.txt" ] && latest=$(tr -d '[:space:]' < "$VCK/latest.txt")
+if [ -z "$latest" ] || [ ! -f "$VCK/$latest" ]; then
+  # dangling/missing pointer: fall back to the highest-numbered ckpt present
+  latest=$(cd "$VCK" 2>/dev/null && ls ckpt_step*.pt 2>/dev/null | sort -V | tail -1)
+fi
+if [ -n "$latest" ] && [ -f "$VCK/$latest" ]; then
+  log "resume: restoring $latest + jsonl history from Volume"
+  cp -f "$VCK/$latest" "$RUN_DIR/$latest"
+  printf '%s\n' "$latest" > "$RUN_DIR/latest.txt"
+  for f in metrics.jsonl eval.jsonl; do
+    [ -f "$VCK/$f" ] && cp -f "$VCK/$f" "$RUN_DIR/$f"
+  done
 fi
 
 sync_once() {
@@ -43,11 +49,15 @@ sync_once() {
     [ -f "$VCK/$b" ] || cp -f "$c" "$VCK/$b" 2>/dev/null
   done
   [ -f "$RUN_DIR/latest.txt" ] && cp -f "$RUN_DIR/latest.txt" "$VCK/latest.txt" 2>/dev/null
-  for c in "$VCK"/ckpt_step*.pt; do
-    [ -f "$c" ] || continue
-    b=$(basename "$c")
-    [ -f "$RUN_DIR/$b" ] || rm -f "$c" 2>/dev/null
-  done
+  # mirror local rotation ONLY once the trainer has produced local ckpts;
+  # a fresh un-resumed start must never delete Volume history
+  if ls "$RUN_DIR"/ckpt_step*.pt >/dev/null 2>&1; then
+    for c in "$VCK"/ckpt_step*.pt; do
+      [ -f "$c" ] || continue
+      b=$(basename "$c")
+      [ -f "$RUN_DIR/$b" ] || rm -f "$c" 2>/dev/null
+    done
+  fi
   tail -1 "$RUN_DIR/metrics.jsonl" 2>/dev/null > "$LOCAL_ROOT/progress-$RUN_NAME.txt" || true
   cp -f "$LOCAL_ROOT/progress-$RUN_NAME.txt" "$VOL/status/train-$RUN_NAME-progress.txt" 2>/dev/null || true
   push_log
@@ -55,9 +65,19 @@ sync_once() {
 
 ( while true; do sleep 300; sync_once; done ) &
 SIDECAR_PID=$!
+trap 'kill "$SIDECAR_PID" "$HB_PID" 2>/dev/null' EXIT
+
+# multi-GPU node -> torchrun DDP; single GPU (the default plan) -> plain python
+NPROC=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')
+if [ "${NPROC:-1}" -gt 1 ]; then
+  log "detected $NPROC GPUs; launching torchrun DDP"
+  LAUNCH=("$VENVS/main/bin/torchrun" --standalone --nproc_per_node="$NPROC")
+else
+  LAUNCH=("$PY")
+fi
 
 # shellcheck disable=SC2086  # EXTRA_ARGS is intentionally word-split
-(cd "$CODE" && "$PY" train_vqvae.py --config "$CONFIG" \
+(cd "$CODE" && "${LAUNCH[@]}" train_vqvae.py --config "$CONFIG" \
     --set "run_name=$FULL_RUN_NAME" $EXTRA_ARGS --resume auto) >> "$LOG_LOCAL" 2>&1
 rc=$?
 kill "$SIDECAR_PID" 2>/dev/null

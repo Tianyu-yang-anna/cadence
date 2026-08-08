@@ -65,7 +65,7 @@ def test_bypass_identity_and_shadow_ema():
 
 def test_revival_replaces_dead_codes():
     vq = make(K=32, revival_interval=1, revival_threshold=1.0).train()
-    # push codes far away so only a few get used, then decay leaves the rest dead
+    # push codes far away so only a few get used in the window
     with torch.no_grad():
         vq.embed += 100.0
         vq.embed_avg.copy_(vq.embed)
@@ -74,8 +74,31 @@ def test_revival_replaces_dead_codes():
     n = vq.pop_revived()
     assert n > 0
     assert vq.pop_revived() == 0  # pop resets
+    assert float(vq.usage_count.sum()) == 0.0  # usage window reset after sweep
     dead_cs = vq.cluster_size[vq.cluster_size == 1.0]
     assert dead_cs.numel() >= n  # revived codes reset to 1.0
+
+
+def test_revival_ignores_ema_mass_scale():
+    """Death detection must use raw usage in the window, NOT the EMA
+    cluster_size (whose total mass = mean assignments/call and cannot support
+    an absolute threshold): codes that ARE used must never be revived even if
+    their EMA mass is tiny."""
+    vq = make(K=4, revival_interval=1, revival_threshold=1.0).train()
+    with torch.no_grad():
+        vq.cluster_size.fill_(0.01)  # tiny EMA mass on every code
+    x = torch.randn(2, 32, 4) * 3.0  # 64 points over 4 codes: all used w.h.p.
+    out = vq(x, update=True)
+    assert int((out.code_counts > 0).sum()) == 4  # sanity: all codes used
+    assert vq.pop_revived() == 0
+
+
+def test_reservoir_fills():
+    vq = make(K=8, revival_enabled=False).train()
+    for _ in range(3):
+        vq(torch.randn(2, 16, 4), update=True)
+    assert int(vq._res_n) > 0
+    assert vq.reservoir[: int(vq._res_n)].abs().sum() > 0
 
 
 def test_commit_loss_has_gradient():

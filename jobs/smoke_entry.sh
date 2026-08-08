@@ -7,6 +7,7 @@ export JOB_TAG=smoke
 source "$(dirname "${BASH_SOURCE[0]}")/bootstrap.sh"
 
 start_heartbeat
+trap 'kill "$HB_PID" 2>/dev/null' EXIT
 log "smoke start on $(hostname); gpu: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
 
 ensure_env || { log "ABORT: env"; exit 1; }

@@ -12,11 +12,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import random
 import time
 from contextlib import nullcontext
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -91,7 +93,7 @@ class ScaleWindow:
 
     def reset(self):
         self.counts = None
-        self.energy = [{"before": 0.0, "after": 0.0, "removed": 0.0} for _ in self.scales]
+        self.energy = [{"before": 0.0, "after": 0.0} for _ in self.scales]
         self.n = 0
 
     def update(self, per_scale):
@@ -103,7 +105,6 @@ class ScaleWindow:
         for e, d in zip(self.energy, per_scale):
             e["before"] += float(d["residual_sq_before"])
             e["after"] += float(d["residual_sq_after"])
-            e["removed"] += float(d["energy_removed_frac"])
         self.n += 1
 
     def summary(self):
@@ -112,13 +113,33 @@ class ScaleWindow:
         for k, l in enumerate(self.scales):
             stats = codebook_stats(self.counts[k]) if self.counts else {}
             out.append({"l": l,
-                        "energy_removed_frac": self.energy[k]["removed"] / nb,
+                        "energy_removed_frac":
+                            1.0 - self.energy[k]["after"] / max(self.energy[k]["before"], 1e-12),
                         "residual_sq_before": self.energy[k]["before"] / nb,
                         "residual_sq_after": self.energy[k]["after"] / nb,
                         "codebook_ppl": stats.get("perplexity", 0.0),
                         "active_ratio": stats.get("active_ratio", 0.0),
                         "dead_ratio": stats.get("dead_ratio", 1.0)})
         return out
+
+    def global_counts(self):
+        return torch.stack(self.counts).sum(0) if self.counts else None
+
+
+def trim_jsonl_to_step(path: Path, max_step: int) -> None:
+    """Drop records with step > max_step (resume rolls back to the checkpoint
+    step; without this, re-run steps would appear twice)."""
+    if not path.exists():
+        return
+    kept = []
+    for line in path.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("step", 0) <= max_step:
+            kept.append(line)
+    path.write_text("\n".join(kept) + ("\n" if kept else ""))
 
 
 def main():
@@ -186,7 +207,13 @@ def main():
                 except Exception as e:  # noqa: BLE001 - resume must not die on RNG shape
                     log_line(f"WARN: rng restore failed ({e}); continuing")
             start_step = int(payload["step"])
+            if rank > 0:
+                # keep per-rank runtime randomness decorrelated after restoring
+                # rank 0's RNG snapshot
+                torch.manual_seed(cfg.seed * 1000 + rank + 1 + start_step)
             if is_main:
+                trim_jsonl_to_step(out_dir / "metrics.jsonl", start_step)
+                trim_jsonl_to_step(out_dir / "eval.jsonl", start_step)
                 log_line(f"resumed from {ckpt_path} at step {start_step}")
 
     micro = cfg.train.micro_batch_size
@@ -265,9 +292,10 @@ def main():
                 "n_revived": raw.msrvq.pop_revived(),
                 "per_scale": scale_win.summary(),
             }
-            if cfg.quantizer.shared_codebook:
-                record["ema"] = ema_cluster_stats(raw.msrvq.vq.cluster_size,
-                                                  cfg.quantizer.revival.threshold)
+            gc = scale_win.global_counts()
+            if gc is not None and cfg.quantizer.shared_codebook:
+                record["codebook_window"] = codebook_stats(gc)
+                record["ema"] = ema_cluster_stats(raw.msrvq.vq.cluster_size)
             metrics_log.log(record)
             win = {k: 0 if isinstance(v, int) else 0.0 for k, v in win.items()}
             scale_win.reset()
@@ -280,12 +308,14 @@ def main():
             eval_log.log({"step": step, "split": "val", "full": res["full"],
                           "truncation": res["truncation"], "per_scale": res["per_scale"]})
             model.train()
+            t_last = time.time()  # exclude eval wall time from tokens/s
 
         if step % cfg.train.save_interval == 0 or step == cfg.train.max_steps:
             if is_main:
                 path = save_checkpoint(out_dir, step, raw, optimizer, scheduler, cfg,
                                        keep_last=cfg.train.keep_last)
                 log_line(f"saved {path}")
+                t_last = time.time()
 
     if ddp:
         dist.barrier()

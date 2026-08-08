@@ -24,14 +24,14 @@ from utils.logging import log_line
 from utils.metrics import ema_cluster_stats
 
 
-def jaccard_overlap(scale_counts: list[torch.Tensor]) -> list[dict]:
+def jaccard_overlap(scale_counts: list[torch.Tensor], scales: list[int]) -> list[dict]:
     used = [set(torch.nonzero(c > 0).flatten().tolist()) for c in scale_counts]
     out = []
     for i in range(len(used)):
         for j in range(i + 1, len(used)):
             union = used[i] | used[j]
             inter = used[i] & used[j]
-            out.append({"scales": [i, j],
+            out.append({"scales": [scales[i], scales[j]],
                         "jaccard": len(inter) / max(len(union), 1),
                         "used_i": len(used[i]), "used_j": len(used[j])})
     return out
@@ -91,6 +91,21 @@ def main():
     payload = load_checkpoint(ckpt_path, map_location=device)
     step = int(payload.get("step", -1))
 
+    # The checkpoint's model/quantizer config is the source of truth: quantizer
+    # ablations (scales/upsample/lookup) are buffer-shape-identical, so a wrong
+    # CLI config would load silently and produce a plausible-but-wrong eval.
+    ck_cfg = payload.get("config") or {}
+    if ck_cfg:
+        import dataclasses
+
+        from utils.config import ModelConfig, QuantizerConfig, _build
+        cur = dataclasses.asdict(cfg)
+        for section, cls in (("model", ModelConfig), ("quantizer", QuantizerConfig)):
+            if section in ck_cfg and ck_cfg[section] != cur[section]:
+                log_line(f"WARN: --config {section} differs from checkpoint; "
+                         f"adopting the checkpoint's {section} config")
+                setattr(cfg, section, _build(cls, ck_cfg[section]))
+
     torch.manual_seed(cfg.seed)
     model = TextVQVAE(cfg.model, cfg.quantizer).to(device)
     model.load_state_dict(payload["model"])
@@ -107,11 +122,13 @@ def main():
         "full": res["full"],
         "truncation": res["truncation"],
         "per_scale": res["per_scale"],
-        "code_overlap_jaccard": jaccard_overlap(res["scale_counts"]),
+        "code_overlap_jaccard": jaccard_overlap(res["scale_counts"], model.msrvq.scales),
     }
     if cfg.quantizer.shared_codebook:
-        report["ema"] = ema_cluster_stats(model.msrvq.vq.cluster_size,
-                                          cfg.quantizer.revival.threshold)
+        from utils.metrics import codebook_stats
+        global_counts = torch.stack(res["scale_counts"]).sum(0)
+        report["codebook_global"] = codebook_stats(global_counts)
+        report["ema"] = ema_cluster_stats(model.msrvq.vq.cluster_size)
     if args.dump_samples > 0 and cfg.data.dataset != "synthetic":
         report["samples"] = dump_samples(model, loader, device, autocast_dtype,
                                          args.dump_samples)

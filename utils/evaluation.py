@@ -49,7 +49,7 @@ def evaluate(model, loader, device, autocast_dtype=None, max_batches: int = 0,
     full = {"ce_sum": 0.0, "correct": 0, "total": 0}
     trunc = [{"ce_sum": 0.0, "correct": 0, "total": 0} for _ in range(K)]
     scale_counts = None
-    energy = [{"before": 0.0, "after": 0.0, "removed": 0.0} for _ in range(K)]
+    energy = [{"before": 0.0, "after": 0.0} for _ in range(K)]
     n_batches = 0
 
     for bi, batch in enumerate(loader):
@@ -86,7 +86,6 @@ def evaluate(model, loader, device, autocast_dtype=None, max_batches: int = 0,
         for e, d in zip(energy, ps):
             e["before"] += float(d["residual_sq_before"])
             e["after"] += float(d["residual_sq_after"])
-            e["removed"] += float(d["energy_removed_frac"])
         n_batches += 1
 
     per_scale = []
@@ -97,7 +96,8 @@ def evaluate(model, loader, device, autocast_dtype=None, max_batches: int = 0,
             "l": scales[k],
             "residual_sq_before": energy[k]["before"] / nb,
             "residual_sq_after": energy[k]["after"] / nb,
-            "energy_removed_frac": energy[k]["removed"] / nb,
+            # ratio of sums, consistent with the reported before/after averages
+            "energy_removed_frac": 1.0 - energy[k]["after"] / max(energy[k]["before"], 1e-12),
             **{f"codebook_{key}": v for key, v in stats.items()},
         })
 

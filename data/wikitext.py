@@ -11,6 +11,7 @@ synthetic: deterministic random ids for CPU dev / dry runs (no downloads).
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -96,6 +97,15 @@ def build_dataset(cfg: Config, split: str) -> Dataset:
         seed = cfg.seed + {"train": 0, "val": 1, "test": 2}.get(split, 3)
         return SyntheticDataset(n, seq_len, d.synthetic_vocab, seed=seed)
     bin_dir = Path(d.bin_dir)
+    meta_path = bin_dir / "meta.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+        if meta.get("packing") and meta["packing"] != d.packing:
+            raise ValueError(f"bins were prepared with packing={meta['packing']!r} "
+                             f"but config asks for {d.packing!r}")
+        if d.packing == "per_doc" and meta.get("seq_len") not in (None, seq_len):
+            raise ValueError(f"per_doc bins have fixed seq_len={meta['seq_len']}, "
+                             f"config asks for {seq_len}")
     if d.packing == "per_doc":
         return PaddedWindowDataset(bin_dir / f"windows_{split}.bin",
                                    bin_dir / f"lengths_{split}.npy",

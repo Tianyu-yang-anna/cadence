@@ -39,12 +39,15 @@ def codebook_stats(counts: torch.Tensor) -> dict:
 
 
 @torch.no_grad()
-def ema_cluster_stats(cluster_size: torch.Tensor, dead_threshold: float = 1.0) -> dict:
-    """Health of the live EMA codebook (dead = EMA cluster_size below threshold)."""
+def ema_cluster_stats(cluster_size: torch.Tensor) -> dict:
+    """Scale of the live EMA mass. NOTE: no dead/active ratio here on purpose —
+    cluster_size total mass equals the mean assignments per VQ call, so an
+    absolute threshold on it is meaningless; use raw usage counts accumulated
+    over a window (codebook_stats) for utilization."""
     cs = cluster_size.float()
-    dead = float((cs < dead_threshold).float().mean())
-    return {"ema_active_ratio": 1.0 - dead, "ema_dead_ratio": dead,
-            "ema_cluster_size_mean": float(cs.mean()), "ema_cluster_size_max": float(cs.max())}
+    return {"ema_cluster_size_mean": float(cs.mean()),
+            "ema_cluster_size_max": float(cs.max()),
+            "ema_cluster_size_min": float(cs.min())}
 
 
 def ppl_from_ce(ce: float) -> float:

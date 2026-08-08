@@ -10,19 +10,44 @@ from data.wikitext import (PaddedWindowDataset, SyntheticDataset, WindowBinDatas
 
 def test_split_docs_top_level_only():
     lines = [
-        "\n",
+        "",
         " = Doc One = \n",
+        "",
         "some text a\n",
         " = = Section = = \n",          # sub-heading: must NOT start a new doc
         " = = = Subsub = = = \n",
         "more text\n",
+        "",
         " = Doc Two = \n",
+        "",
         "text c\n",
     ]
     docs = split_docs(lines)
     assert len(docs) == 2
     assert "Section" in docs[0] and "Doc One" in docs[0]
     assert "Doc Two" in docs[1]
+
+
+def test_split_docs_ignores_inbody_lookalikes():
+    # the train split contains ~970 body lines format-identical to headings
+    # (wrapped stat legends, split equations); they have non-blank neighbors
+    # and must NOT split the article
+    lines = [
+        "",
+        " = Doc One = \n",
+        "",
+        "The abbreviations used in the table are :\n",
+        " = Position ; GP = \n",        # lookalike, non-blank context
+        " = Goals ; A = \n",            # lookalike, non-blank context
+        "games played .\n",
+        "",
+        " = Doc Two = \n",
+        "",
+        "text c\n",
+    ]
+    docs = split_docs(lines)
+    assert len(docs) == 2
+    assert "Position ; GP" in docs[0]
 
 
 def test_heading_regex():

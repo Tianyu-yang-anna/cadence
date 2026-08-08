@@ -22,11 +22,22 @@ _SPLIT_FILES = {"train": "train", "validation": "val", "test": "test"}
 
 
 def split_docs(lines: list[str]) -> list[str]:
-    """Group raw wikitext lines into documents at top-level headings."""
+    """Group raw wikitext lines into documents at top-level headings.
+
+    A heading only starts a new document when surrounded by blank lines, like
+    real article titles in the corpus. The train split contains ~970 in-body
+    lines that are format-identical to headings (wrapped stat legends,
+    reference-list book titles, split equations, e.g. ' = Position ; GP = ');
+    those always have non-blank neighbors and must NOT split the article.
+    """
     docs: list[str] = []
     cur: list[str] = []
-    for line in lines:
-        if DOC_HEADING_RE.match(line.rstrip("\n")) and cur:
+    n = len(lines)
+    for i, line in enumerate(lines):
+        prev_blank = i == 0 or not lines[i - 1].strip()
+        next_blank = i + 1 >= n or not lines[i + 1].strip()
+        if (prev_blank and next_blank and cur
+                and DOC_HEADING_RE.match(line.rstrip("\n"))):
             doc = "".join(cur)
             if doc.strip():
                 docs.append(doc)
@@ -75,6 +86,7 @@ def main():
     ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1")
     meta = {"tokenizer": "gpt2", "vocab_size": 50257, "eos_id": eos_id,
             "seq_len": 256, "packing": "contiguous", "splits": {}}
+    expected_docs = {"train": 28475, "val": 60, "test": 60}  # official article counts
     for hf_split, name in _SPLIT_FILES.items():
         lines = ds[hf_split]["text"]
         docs = split_docs(lines)
@@ -82,8 +94,11 @@ def main():
         stream.tofile(out / f"{name}.bin")
         meta["splits"][name] = {"n_docs": len(docs), "n_tokens": int(stream.size),
                                 "n_windows_256": int(stream.size // 256)}
-        print(f"{name}: {len(docs)} docs, {stream.size} tokens "
-              f"-> {out / f'{name}.bin'}", flush=True)
+        exp = expected_docs[name]
+        drift = abs(len(docs) - exp) / exp
+        flag = "" if drift < 0.02 else "  <-- WARN: far from official count, check split_docs"
+        print(f"{name}: {len(docs)} docs (official ~{exp}){flag}, "
+              f"{stream.size} tokens -> {out / f'{name}.bin'}", flush=True)
     with open(out / "meta.json", "w") as f:
         json.dump(meta, f, indent=2)
     print(f"meta -> {out / 'meta.json'}", flush=True)
