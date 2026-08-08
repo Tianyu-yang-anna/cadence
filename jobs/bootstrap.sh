@@ -93,10 +93,17 @@ ensure_data() {
     log "restoring wikitext-103 bins from Volume"
     cp -f "$VOL/data/wikitext103/"*.bin "$VOL/data/wikitext103/meta.json" "$ddir/" || return 1
   else
-    log "preparing wikitext-103 on node (download + tokenize, ~10 min)"
-    (cd "$CODE" && "$PY" data/prepare_wikitext.py --out "$ddir") >> "$LOG_LOCAL" 2>&1 \
-      || { push_log; log "data prep FAILED"; return 1; }
+    log "preparing wikitext-103 on node (download + tokenize)"
+    # live progress: push the local log to the Volume every 60s while prep runs
+    ( while true; do sleep 60; cp -f "$LOG_LOCAL" "$VOL/logs/$JOB_TAG.log" 2>/dev/null || true; done ) &
+    local push_pid=$!
+    # parallel rust tokenization just for prep (global default is false)
+    (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_wikitext.py --out "$ddir") \
+      >> "$LOG_LOCAL" 2>&1
+    local prep_rc=$?
+    kill "$push_pid" 2>/dev/null
     push_log
+    [ $prep_rc -ne 0 ] && { log "data prep FAILED rc=$prep_rc"; return 1; }
     mkdir -p "$VOL/data/wikitext103"
     cp -f "$ddir/"*.bin "$ddir/meta.json" "$VOL/data/wikitext103/" || return 1
     touch "$LOCAL_ROOT/data.done" && cp -f "$LOCAL_ROOT/data.done" "$VOL/status/data-wikitext103.done"
