@@ -36,7 +36,10 @@ from utils.metrics import codebook_stats, ema_cluster_stats, ppl_from_ce, token_
 
 
 def setup_distributed():
-    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+    # torchrun sets BOTH WORLD_SIZE and RANK; the Databricks GPU platform
+    # injects WORLD_SIZE(=total GPUs)/NODE_RANK on multi-GPU nodes WITHOUT
+    # RANK — that is not a DDP launch, so require RANK too
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1 and "RANK" in os.environ:
         dist.init_process_group(backend="nccl" if torch.cuda.is_available() else "gloo")
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         if torch.cuda.is_available():

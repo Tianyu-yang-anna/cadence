@@ -9,8 +9,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/bootstrap.sh"
 
 start_heartbeat
 trap 'kill "$HB_PID" 2>/dev/null' EXIT
-ensure_env || { log "ABORT: env"; exit 1; }
-ensure_data || { log "ABORT: data"; exit 1; }
+if [ "${SKIP_ENSURE:-0}" != "1" ]; then
+  ensure_env || { log "ABORT: env"; exit 1; }
+  ensure_data || { log "ABORT: data"; exit 1; }
+fi
 
 FULL_RUN_NAME="vqvae_wt103_$RUN_NAME"
 RUN_DIR="$LOCAL_ROOT/runs/$FULL_RUN_NAME"
