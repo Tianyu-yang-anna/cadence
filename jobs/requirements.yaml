@@ -1,0 +1,3 @@
+version: "4"
+dependencies:
+  - mlflow>=3.7

@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+runs/
+*.bin
+*.pt
+*.npz
+.DS_Store
+.job-*.yaml

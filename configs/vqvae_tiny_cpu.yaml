@@ -1,0 +1,35 @@
+# Mac CPU dev / pytest config. Same seq_len=256 and scales [1,2,4,256] as
+# production; only layers/width/codebook are shrunk.
+run_name: vqvae_tiny_cpu
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 256
+  d_model: 128
+  d_code: 16
+  encoder: {num_layers: 2, num_heads: 4}
+  decoder: {num_layers: 2, num_heads: 4}
+quantizer:
+  scales: [1, 2, 4, 256]
+  codebook_size: 512
+  revival: {enabled: true, threshold: 1.0, interval: 20}
+data:
+  dataset: synthetic
+  limit_windows: 64
+  num_workers: 0
+  synthetic_vocab: 1000
+train:
+  max_steps: 30
+  batch_size: 8
+  micro_batch_size: 8
+  lr: 1.0e-3
+  warmup_steps: 5
+  bf16: false
+  bypass_vq_steps: 10
+  scale_dropout_p: 0.0
+  log_interval: 5
+  eval_interval: 15
+  eval_batches: 2
+  save_interval: 15
+  keep_last: 2
+  out_dir: runs/${run_name}
