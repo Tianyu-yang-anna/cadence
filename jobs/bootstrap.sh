@@ -87,26 +87,31 @@ ensure_env() {
 }
 
 ensure_data() {
-  local ddir="$LOCAL_ROOT/data/wikitext103"
+  # DATA_NAME selects the prepared-bin set (wikitext103 = gpt2 bins,
+  # wikitext103_bert = bert-base-uncased bins); TOKENIZER only matters if the
+  # bins must be (re)built on the node.
+  local name="${DATA_NAME:-wikitext103}"
+  local tok="${TOKENIZER:-gpt2}"
+  local ddir="$LOCAL_ROOT/data/$name"
   mkdir -p "$ddir"
-  if [ -f "$VOL/status/data-wikitext103.done" ]; then
-    log "restoring wikitext-103 bins from Volume"
-    cp -f "$VOL/data/wikitext103/"*.bin "$VOL/data/wikitext103/meta.json" "$ddir/" || return 1
+  if [ -f "$VOL/status/data-$name.done" ]; then
+    log "restoring $name bins from Volume"
+    cp -f "$VOL/data/$name/"*.bin "$VOL/data/$name/meta.json" "$ddir/" || return 1
   else
-    log "preparing wikitext-103 on node (download + tokenize)"
+    log "preparing $name on node (tokenizer=$tok; download + tokenize)"
     # live progress: push the local log to the Volume every 60s while prep runs
     ( while true; do sleep 60; cp -f "$LOG_LOCAL" "$VOL/logs/$JOB_TAG.log" 2>/dev/null || true; done ) &
     local push_pid=$!
     # parallel rust tokenization just for prep (global default is false)
-    (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_wikitext.py --out "$ddir") \
-      >> "$LOG_LOCAL" 2>&1
+    (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_wikitext.py \
+        --tokenizer "$tok" --out "$ddir") >> "$LOG_LOCAL" 2>&1
     local prep_rc=$?
     kill "$push_pid" 2>/dev/null
     push_log
     [ $prep_rc -ne 0 ] && { log "data prep FAILED rc=$prep_rc"; return 1; }
-    mkdir -p "$VOL/data/wikitext103"
-    cp -f "$ddir/"*.bin "$ddir/meta.json" "$VOL/data/wikitext103/" || return 1
-    touch "$LOCAL_ROOT/data.done" && cp -f "$LOCAL_ROOT/data.done" "$VOL/status/data-wikitext103.done"
+    mkdir -p "$VOL/data/$name"
+    cp -f "$ddir/"*.bin "$ddir/meta.json" "$VOL/data/$name/" || return 1
+    touch "$LOCAL_ROOT/data.done" && cp -f "$LOCAL_ROOT/data.done" "$VOL/status/data-$name.done"
   fi
   log "data ready: $(ls -la "$ddir" | tr '\n' ' ')"
 }

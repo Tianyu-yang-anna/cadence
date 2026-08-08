@@ -1,10 +1,13 @@
-"""One-shot WikiText-103 preparation: HF dataset -> document-aware GPT-2 BPE
--> uint16 token stream per split ({train,val,test}.bin + meta.json).
+"""One-shot WikiText-103 preparation: HF dataset -> document-aware tokenizer
+(GPT-2 BPE by default, any HF tokenizer via --tokenizer, e.g.
+bert-base-uncased) -> uint16 token stream per split ({train,val,test}.bin +
+meta.json).
 
 Documents are delimited by TOP-LEVEL headings only (' = Title = '), never by
-sub-headings (' = = Section = = '). An EOS token (50256) is appended after
-every document. Windows are cut later by the loader (contiguous packing:
-every 256-token window is full, so there are no PAD positions).
+sub-headings (' = = Section = = '). A separator token (EOS for GPT-style,
+[SEP] for BERT-style) is appended after every document. Windows are cut later
+by the loader (contiguous packing: every 256-token window is full, so there
+are no PAD positions).
 """
 from __future__ import annotations
 
@@ -71,21 +74,31 @@ def encode_docs(docs: list[str], tokenizer, eos_id: int, batch_size: int = 512,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="output dir for .bin/meta.json")
+    ap.add_argument("--tokenizer", default="gpt2",
+                    help="HF tokenizer name (gpt2 | bert-base-uncased | ...)")
     ap.add_argument("--batch_size", type=int, default=512)
     args = ap.parse_args()
 
     from datasets import load_dataset
-    from transformers import GPT2TokenizerFast
+    from transformers import AutoTokenizer
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
-    eos_id = tokenizer.eos_token_id  # 50256
-    assert eos_id == 50256
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
+    # document separator: [SEP] for BERT-style vocabularies, EOS for GPT-style
+    if tokenizer.sep_token_id is not None:
+        sep_id = tokenizer.sep_token_id
+    elif tokenizer.eos_token_id is not None:
+        sep_id = tokenizer.eos_token_id
+    else:
+        raise ValueError(f"{args.tokenizer} has neither sep nor eos token")
+    vocab_size = len(tokenizer)
+    assert vocab_size < 65536, "uint16 bins require vocab < 65536"
 
     ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1")
-    meta = {"tokenizer": "gpt2", "vocab_size": 50257, "eos_id": eos_id,
-            "seq_len": 256, "packing": "contiguous", "splits": {}}
+    meta = {"tokenizer": args.tokenizer, "vocab_size": vocab_size,
+            "sep_id": sep_id, "seq_len": 256, "packing": "contiguous",
+            "splits": {}}
     expected_docs = {"train": 28475, "val": 60, "test": 60}  # official article counts
     for hf_split, name in _SPLIT_FILES.items():
         # materialize the column ONCE via arrow: datasets>=5 returns a lazy
@@ -96,7 +109,7 @@ def main():
         except Exception:
             lines = list(ds[hf_split]["text"])
         docs = split_docs(lines)
-        stream = encode_docs(docs, tokenizer, eos_id, args.batch_size)
+        stream = encode_docs(docs, tokenizer, sep_id, args.batch_size)
         stream.tofile(out / f"{name}.bin")
         meta["splits"][name] = {"n_docs": len(docs), "n_tokens": int(stream.size),
                                 "n_windows_256": int(stream.size // 256)}

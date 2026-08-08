@@ -37,10 +37,20 @@ def jaccard_overlap(scale_counts: list[torch.Tensor], scales: list[int]) -> list
     return out
 
 
+def _load_tokenizer(bin_dir: str):
+    """Tokenizer name comes from the bins' meta.json (gpt2 default)."""
+    from transformers import AutoTokenizer
+    name = "gpt2"
+    meta_path = Path(bin_dir) / "meta.json"
+    if meta_path.exists():
+        name = json.loads(meta_path.read_text()).get("tokenizer", "gpt2")
+    return AutoTokenizer.from_pretrained(name, use_fast=True)
+
+
 @torch.no_grad()
-def dump_samples(model, loader, device, autocast_dtype, n_samples: int) -> list[dict]:
-    from transformers import GPT2TokenizerFast
-    tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+def dump_samples(model, loader, device, autocast_dtype, n_samples: int,
+                 bin_dir: str) -> list[dict]:
+    tokenizer = _load_tokenizer(bin_dir)
     batch = next(iter(loader))
     ids = batch["input_ids"][:n_samples].to(device)
     mask = batch.get("attention_mask")
@@ -131,7 +141,7 @@ def main():
         report["ema"] = ema_cluster_stats(model.msrvq.vq.cluster_size)
     if args.dump_samples > 0 and cfg.data.dataset != "synthetic":
         report["samples"] = dump_samples(model, loader, device, autocast_dtype,
-                                         args.dump_samples)
+                                         args.dump_samples, cfg.data.bin_dir)
 
     out_path = Path(args.out) if args.out else out_dir / f"eval_{args.split}_step{step}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)

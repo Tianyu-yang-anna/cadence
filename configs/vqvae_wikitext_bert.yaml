@@ -1,0 +1,51 @@
+# WikiText-103 with bert-base-uncased tokenization (vocab 30,522, docs
+# separated by [SEP]); scale dropout 0.5 by default (sd05-style — required for
+# the truncation diagnostic to be meaningful). Schedule set via --set.
+run_name: vqvae_wt103bert
+seed: 42
+model:
+  vocab_size: 30522
+  seq_len: 256
+  d_model: 512
+  d_code: 32
+  rope_theta: 10000.0
+  tie_lm_head: true
+  encoder: {num_layers: 6, num_heads: 8, ffn_mult: 4, dropout: 0.0}
+  decoder: {num_layers: 8, num_heads: 8, ffn_mult: 4, dropout: 0.0}
+quantizer:
+  scales: [1, 2, 4, 256]
+  codebook_size: 8192
+  shared_codebook: true
+  lookup: l2
+  ema_decay: 0.99
+  ema_eps: 1.0e-5
+  commitment_beta: 0.25
+  upsample_mode: nearest-exact
+  revival: {enabled: true, threshold: 1.0, interval: 100}
+  phi: {enabled: false, kernel_size: 3}
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/wikitext103_bert
+  packing: contiguous
+  limit_windows: 0
+  num_workers: 4
+train:
+  max_steps: 50000
+  batch_size: 256
+  micro_batch_size: 64
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 1000
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  bf16: true
+  bypass_vq_steps: 5000
+  bypass_ema_warmup: true
+  scale_dropout_p: 0.5
+  log_interval: 50
+  eval_interval: 1000
+  eval_batches: 50
+  save_interval: 2000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}
