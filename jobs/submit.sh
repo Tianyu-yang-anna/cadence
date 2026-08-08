@@ -37,18 +37,13 @@ YAML=".job-$NAME.yaml"
       echo "  $k: \"$v\""
     done
   fi
+  # NOTE: no include_paths — sgcli validates entries with 'git ls-tree -d'
+  # (directories only, files always fail). A clean repo snapshots tracked
+  # files via git anyway, so .venv/runs/.job-*.yaml never enter the tarball.
   echo "code_source:"
   echo "  type: snapshot"
   echo "  snapshot:"
   echo "    repo_path: ."
-  echo "    include_paths:"
-  echo "      - configs"
-  echo "      - data"
-  echo "      - models"
-  echo "      - utils"
-  echo "      - jobs"
-  echo "      - train_vqvae.py"
-  echo "      - eval_vqvae.py"
   echo "command: |"
   echo "  bash \$CODE_SOURCE_PATH/jobs/${STAGE}_entry.sh"
 } > "$YAML"
