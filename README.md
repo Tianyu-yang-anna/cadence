@@ -133,7 +133,18 @@ Findings:
    context-independent noise — consistent with (1)/(2). Probe on bertB
    pending to confirm dense ladders fix mid-scale predictability.
 
+6. Probe on bertB (dense ladder): codes are near-max-entropy everywhere
+   (11.9-12.7 of 13 bits marginal; codebook fully utilized) with modest
+   prefix-only AR gains (+0.2-0.5 bits coarse/mid, +2.05 finest) and NO
+   document-fingerprint scale (l=8 adjacent-window lift 12x/0.35% abs vs the
+   pilot q1's 98x/44%). Dense ladders trade the topic anchor for
+   reconstruction efficiency: information is packed densely, so codes carry
+   more but are individually harder to predict without conditioning. (Tiny
+   4L AR without text conditioning is a lower bound — the Stage 1 planner
+   conditions on the prompt, which supplies most of the missing bits.)
+
 **Stage 1 tokenizer recipe (recommendation):** BERT or GPT-2 both fine;
-schedule = dense geometric ladder starting at 8 (consider hybrid
-[1, 8, 16, 32, 64, 128, 256]: keep one global topic-anchor code + the
-efficient ramp), scale_dropout 0.5, shared codebook, no phi.
+schedule = **hybrid [1, 8, 16, 32, 64, 128, 256]** — the l=1 topic-anchor
+code (98x document consistency, planner-predictable) plus the
+budget-efficient dense ramp from 8; scale_dropout 0.5; shared codebook;
+no phi. Worth one confirmation run before Stage 1 freezes the tokenizer.
