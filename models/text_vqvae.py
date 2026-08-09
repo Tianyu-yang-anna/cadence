@@ -71,9 +71,16 @@ class TextVQVAE(nn.Module):
         return self.lm_head(h)
 
     def _decoder_input(self, ms: MSRVQOut, scale_dropout_p: float,
-                       truncate_scales: int | None):
+                       truncate_scales: int | None,
+                       scale_subset: list[int] | None = None):
         K = len(ms.contribs)
         kept = None
+        if scale_subset is not None:
+            assert truncate_scales is None, "scale_subset and truncate_scales are exclusive"
+            assert len(scale_subset) > 0, "scale_subset must be non-empty"
+            assert all(0 <= i < K for i in scale_subset), f"subset indices out of range 0..{K-1}"
+            picked = torch.stack([ms.contribs[i] for i in sorted(set(scale_subset))]).sum(0)
+            return picked, kept
         if truncate_scales is not None:
             assert 1 <= truncate_scales <= K
             prefix = torch.stack(ms.contribs[:truncate_scales]).sum(0)
@@ -94,12 +101,14 @@ class TextVQVAE(nn.Module):
     def forward(self, input_ids: torch.Tensor, attention_mask=None, labels=None,
                 bypass_vq: bool = False, scale_dropout_p: float = 0.0,
                 truncate_scales: int | None = None,
+                scale_subset: list[int] | None = None,
                 update_codebook: bool = True) -> TextVQVAEOut:
         z = self.encode(input_ids, attention_mask)
         ms = self.msrvq(z, bypass=bypass_vq, update=update_codebook)
         if bypass_vq:
             scale_dropout_p = 0.0  # prefixes are unquantized shortcuts during bypass
-        dec_in, kept = self._decoder_input(ms, scale_dropout_p, truncate_scales)
+        dec_in, kept = self._decoder_input(ms, scale_dropout_p, truncate_scales,
+                                           scale_subset)
         logits = self.decode_latent(dec_in, attention_mask)
 
         recon = loss = None

@@ -52,11 +52,15 @@ def dump_codes(model, dataset, device, n_windows: int, batch_size: int = 64,
     t0 = time.time()
     for start in range(0, n, batch_size):
         idx = range(start, min(start + batch_size, n))
-        ids = torch.stack([dataset[i]["input_ids"] for i in idx]).to(device)
+        items = [dataset[i] for i in idx]
+        ids = torch.stack([it["input_ids"] for it in items]).to(device)
+        mask = None
+        if "attention_mask" in items[0]:
+            mask = torch.stack([it["attention_mask"] for it in items]).to(device)
         ctx = (torch.autocast(device_type=device.type, dtype=autocast_dtype)
                if autocast_dtype else nullcontext())
         with ctx:
-            z = model.encode(ids)
+            z = model.encode(ids, mask)
             ms = model.msrvq(z, update=False)
         flat = torch.cat([c.reshape(len(ids), -1) for c in ms.codes], dim=1)
         out[start:start + len(ids)] = flat.cpu().numpy()

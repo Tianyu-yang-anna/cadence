@@ -113,3 +113,66 @@ def evaluate(model, loader, device, autocast_dtype=None, max_batches: int = 0,
     if was_training:
         model.train()
     return result
+
+
+@torch.no_grad()
+def evaluate_subsets(model, loader, device, subsets: list[list[int]],
+                     autocast_dtype=None, max_batches: int = 0,
+                     decoder_override=None, head_override=None):
+    """Decode from arbitrary SCALE-INDEX subsets of the contributions.
+
+    subsets: list of scale-index lists (e.g. [[0,1,2], [1], [0,2]]).
+    decoder_override/head_override: an alternative decoder trunk (+ untied LM
+    head weight) — used for the subset-readout decoder, which unlike the
+    original was trained on non-prefix subsets and is in-distribution here.
+    Returns [{subset, acc, ce, ppl, n_tokens} ...] in the input order.
+    """
+    from contextlib import nullcontext
+
+    was_training = model.training
+    model.eval()
+    K = model.num_scales
+    for s in subsets:
+        assert len(s) > 0 and all(0 <= i < K for i in s), f"bad subset {s}"
+
+    def ac():
+        if autocast_dtype is not None:
+            return torch.autocast(device_type=device.type, dtype=autocast_dtype)
+        return nullcontext()
+
+    def decode(dec_in, mask):
+        if decoder_override is None:
+            return model.decode_latent(dec_in, mask)
+        h = decoder_override(dec_in, mask)
+        if head_override is not None:
+            weight = head_override
+        else:
+            weight = (model.tok_emb.weight if model.lm_head is None
+                      else model.lm_head.weight)
+        return F.linear(h, weight)
+
+    buckets = [{"ce_sum": 0.0, "correct": 0, "total": 0} for _ in subsets]
+    n_batches = 0
+    for bi, batch in enumerate(loader):
+        if max_batches and bi >= max_batches:
+            break
+        ids = batch["input_ids"].to(device)
+        labels = batch["labels"].to(device)
+        mask = batch.get("attention_mask")
+        if mask is not None:
+            mask = mask.to(device)
+        with ac():
+            z = model.encode(ids, mask)
+            ms = model.msrvq(z, update=False)
+            stacked = torch.stack(ms.contribs)  # [K, B, N, d]
+        for si, subset in enumerate(subsets):
+            with ac():
+                dec_in = stacked[sorted(set(subset))].sum(0)
+                logits = decode(dec_in, mask)
+            _accumulate(buckets[si], logits, labels)
+        n_batches += 1
+
+    if was_training:
+        model.train()
+    return [{"subset": sorted(set(s)), **_finalize(buckets[si])}
+            for si, s in enumerate(subsets)]
