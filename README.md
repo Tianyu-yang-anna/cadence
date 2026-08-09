@@ -94,6 +94,46 @@ Findings:
    active globally; the shared codebook self-partitions by scale (coarse/fine
    Jaccard ~0; sd05 scales 2&4 share 88%).
 
-Next (not yet run): schedule ablations [256]/[4,256]/[2,4,256] via
-`--set quantizer.scales=...`; planner-friendliness probes (tiny AR on scale
-tokens, per-scale entropy); richer coarse budgets (e.g. [1,2,4,8,16,256]).
+## Results round 2: BERT line — schedules, factors, probe (2026-08-08/09)
+
+Tokenizer switched to bert-base-uncased (vocab 30,522, [SEP] doc separators;
+bins in `$VOL/data/wikitext103_bert`). 8 runs, 50k steps each, all
+scale_dropout_p=0.5 unless noted; all TERMINATED SUCCESS:
+bertA=[4..256]x2, bertB=[8..256], bertC=[1..256] full ladder,
+bertD=[1,4,16,64,256], bertPilot=[1,2,4,256] (reference), plus single-factor
+bertPhi (+phi convs), bertSepCB (per-scale codebooks), bertP75 (dropout .75).
+Full tables: `analyze_runs.py --dir /tmp/cadence_evals` -> summary.md.
+
+Headline truncation numbers (test acc from coarse prefixes only):
+
+| run | ~60 codes | ~124 codes | ~250 codes | full |
+|---|---|---|---|---|
+| bertB [8..256] | **29.7%** | **52.5%** | **84.4%** | 99.4% |
+| bertA [4..256] | 17.8% | 40.6% | 81.3% | 99.6% |
+| bertC [1..256] | 17.3% | 38.7% | 80.0% | 99.7% |
+| bertD [1,4,16,64,256] | — | 31.1% (85 codes) | — | 99.4% |
+| bertPilot [1,2,4,256] | — (7 codes: 7.8%) | — | — | **99.9%** |
+
+Findings:
+1. **Dense mid-scales unlock the coarse-to-fine ramp.** The pilot's 7 coarse
+   codes cap at ~8% decode; a geometric ladder reaches >52% at 124 codes and
+   84% at 250. The budget wall was the schedule, not the method.
+2. **bertB (ladder starting at l=8) dominates at every matched budget** —
+   ultra-coarse scales l=1/2/4 are nearly information-free rungs; text's
+   useful global granularity starts around one code per 32-token block.
+3. **phi convs: no effect on text** (truncation +0.05pp, full recon slightly
+   worse) — keep off. **dropout 0.75 ≈ 0.5** (+0.1pp) — pressure is not the
+   bottleneck, capacity is. **Per-scale codebooks: +0.3pp** coarse gain — a
+   real but marginal option (4x codebook params).
+4. **Tokenizer effect minor**: bertPilot vs GPT-2 sd05 at matched config —
+   truncation 7.8% vs 6.7%, full 99.85% vs 99.76%. Conclusions transfer.
+5. Planner probe on GPT-2 sd05 (probe_planner.py): q1 is a document/topic
+   fingerprint (adjacent-window agreement 44% vs 0.45% random, 98x lift);
+   fine codes gain +3.4 bits from context; but pilot's mid scales (2,4) are
+   context-independent noise — consistent with (1)/(2). Probe on bertB
+   pending to confirm dense ladders fix mid-scale predictability.
+
+**Stage 1 tokenizer recipe (recommendation):** BERT or GPT-2 both fine;
+schedule = dense geometric ladder starting at 8 (consider hybrid
+[1, 8, 16, 32, 64, 128, 256]: keep one global topic-anchor code + the
+efficient ramp), scale_dropout 0.5, shared codebook, no phi.
