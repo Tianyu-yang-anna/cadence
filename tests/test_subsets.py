@@ -94,6 +94,23 @@ def test_readout_freeze_and_sampling(tiny_cfg, tmp_path):
     assert not torch.equal(head.data, model.tok_emb.weight), "head not updated"
 
 
+def test_next_scale_predictor_codebook_input():
+    """Codebook mode: frozen pretrained vectors + trainable projection; the
+    codebook buffer must never receive gradients."""
+    torch.manual_seed(0)
+    cb = torch.randn(64, 16)
+    model = NextScalePredictor(vocab=64, n_cond=3, n_target=4, n_scales=3,
+                               codebook=cb)
+    cond = torch.randint(0, 64, (2, 3))
+    sids = torch.tensor([0, 1, 1])
+    out = model(cond, sids)
+    assert out.shape == (2, 4, 64)
+    out.sum().backward()
+    assert model.codebook.grad is None          # frozen buffer
+    assert model.code_proj.weight.grad is not None  # projection trains
+    assert torch.equal(model.codebook, cb)      # values untouched
+
+
 def test_next_scale_predictor_no_leak():
     """Target codes never enter the input: changing them must not change logits."""
     torch.manual_seed(0)

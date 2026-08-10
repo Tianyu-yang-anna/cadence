@@ -26,11 +26,12 @@ cp -f "$VCK/$latest" "$RUN_DIR/$latest"
 printf '%s\n' "$latest" > "$RUN_DIR/latest.txt"
 log "prompted next-scale probe on $latest"
 
+# shellcheck disable=SC2086
 (cd "$CODE" && "$PY" experiments/exp5_next_scale_probe/probe_next_scale_prompted.py --config "$CONFIG" \
-    --set "run_name=$FULL_RUN_NAME" --ckpt auto) >> "$LOG_LOCAL" 2>&1
+    --set "run_name=$FULL_RUN_NAME" --ckpt auto ${PROBE_ARGS:-}) >> "$LOG_LOCAL" 2>&1
 rc=$?
 push_log
 mkdir -p "$VOL/results/$FULL_RUN_NAME"
-cp -f "$RUN_DIR"/next_scale_probe_prompted.json "$VOL/results/$FULL_RUN_NAME/" 2>/dev/null || true
+cp -f "$RUN_DIR"/next_scale_probe_prompted*.json "$VOL/results/$FULL_RUN_NAME/" 2>/dev/null || true
 [ $rc -eq 0 ] && log "nspp DONE" || log "nspp FAILED rc=$rc"
 exit $rc

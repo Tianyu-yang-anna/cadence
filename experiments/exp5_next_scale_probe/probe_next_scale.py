@@ -48,16 +48,31 @@ from utils.logging import log_line
 class NextScalePredictor(nn.Module):
     """Bidirectional transformer: [cond tokens] + [target query slots] ->
     per-slot logits. `conditioned=False` swaps real code embeddings for a
-    learned null vector (same shapes, same parameter count in the graph)."""
+    learned null vector (same shapes, same parameter count in the graph).
+
+    Conditioning-code representation (`codebook` argument):
+      - pretrained codebook vectors (frozen) + trainable projection — the
+        DEFAULT and the faithful Stage-1 interface (a VAR planner consumes
+        dequantized codebook vectors, and rare codes inherit the tokenizer's
+        geometry for free);
+      - codebook=None falls back to a from-scratch nn.Embedding over code ids
+        (the original probe; underestimates coupling for rare codes because
+        their embeddings are undertrained)."""
 
     def __init__(self, vocab: int, n_cond: int, n_target: int, n_scales: int,
                  d_model: int = 256, n_layers: int = 4, n_heads: int = 4,
-                 conditioned: bool = True):
+                 conditioned: bool = True, codebook: torch.Tensor | None = None):
         super().__init__()
         self.conditioned = conditioned
         self.n_cond = n_cond
         self.n_target = n_target
-        self.code_emb = nn.Embedding(vocab, d_model)
+        if codebook is not None:
+            self.register_buffer("codebook", codebook.detach().clone().float())
+            self.code_proj = nn.Linear(codebook.shape[1], d_model)
+            self.code_emb = None
+        else:
+            self.codebook = None
+            self.code_emb = nn.Embedding(vocab, d_model)
         self.cond_pos = nn.Embedding(max(n_cond, 1), d_model)
         self.scale_emb = nn.Embedding(n_scales, d_model)
         self.null_tok = nn.Parameter(torch.zeros(d_model))
@@ -91,10 +106,12 @@ class NextScalePredictor(nn.Module):
         if self.n_cond > 0:
             pos = self.cond_pos(torch.arange(self.n_cond, device=device))
             sca = self.scale_emb(cond_scale_ids)
-            if self.conditioned:
-                base = self.code_emb(cond_codes)
-            else:
+            if not self.conditioned:
                 base = self.null_tok.expand(B, self.n_cond, -1)
+            elif self.codebook is not None:
+                base = self.code_proj(self.codebook[cond_codes])
+            else:
+                base = self.code_emb(cond_codes)
             parts.append(base + pos + sca)
         q = (self.query_base + self.query_pos(
             torch.arange(self.n_target, device=device))).expand(B, -1, -1)
@@ -113,10 +130,10 @@ class NextScalePredictor(nn.Module):
 
 def train_and_eval(train_codes, val_codes, cond_cols, target_cols, cond_scale_ids,
                    vocab, n_scales, device, steps, batch_size, lr=3e-4,
-                   conditioned=True, seed=0, label=""):
+                   conditioned=True, seed=0, label="", codebook=None):
     torch.manual_seed(seed)
     model = NextScalePredictor(vocab, len(cond_cols), len(target_cols), n_scales,
-                               conditioned=conditioned).to(device)
+                               conditioned=conditioned, codebook=codebook).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     tr = torch.from_numpy(train_codes.astype(np.int64))
     sid = torch.as_tensor(cond_scale_ids, dtype=torch.long, device=device)
@@ -180,6 +197,10 @@ def main():
     ap.add_argument("--val_windows", type=int, default=2000)
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--batch_size", type=int, default=128)
+    ap.add_argument("--code_input", default="codebook", choices=["codebook", "learned"],
+                    help="conditioning representation: frozen pretrained codebook "
+                         "vectors + trainable projection (faithful Stage-1 "
+                         "interface) | from-scratch id embedding (original probe)")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
@@ -208,13 +229,18 @@ def main():
                              args.train_windows, autocast_dtype=autocast_dtype)
     val_codes = dump_codes(model, build_dataset(cfg, "val"), device,
                            args.val_windows, autocast_dtype=autocast_dtype)
+    codebook = None
+    if args.code_input == "codebook":
+        assert cfg.quantizer.shared_codebook, \
+            "--code_input codebook requires a shared codebook"
+        codebook = model.msrvq.vq.embed.detach().clone()
     del model
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
     LN2 = math.log(2)
     kw = dict(vocab=vocab, n_scales=K, device=device, steps=args.steps,
-              batch_size=args.batch_size)
+              batch_size=args.batch_size, codebook=codebook)
 
     transitions = []
     full_coarse_ce = None  # reused by Probe D's all-coarse condition
@@ -275,12 +301,14 @@ def main():
         "n_val_windows": int(val_codes.shape[0]),
         "probe": {"d_model": 256, "n_layers": 4, "steps": args.steps,
                   "batch_size": args.batch_size,
+                  "code_input": args.code_input,
                   "factorization": "parallel per-position, conditionally "
                                    "independent given coarse scales (VAR)"},
         "transitions": transitions,
         "incremental_finest": incremental,
     }
-    out_path = Path(args.out) if args.out else out_dir / "next_scale_probe.json"
+    out_path = (Path(args.out) if args.out
+                else out_dir / f"next_scale_probe_{args.code_input}.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(report, f, indent=2)

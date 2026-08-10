@@ -57,7 +57,7 @@ class PromptedNextScalePredictor(nn.Module):
     def __init__(self, text_vocab: int, code_vocab: int, n_prompt: int,
                  n_cond: int, n_target: int, n_scales: int,
                  d_model: int = 256, n_layers: int = 4, n_heads: int = 4,
-                 use_coarse: bool = True):
+                 use_coarse: bool = True, codebook: torch.Tensor | None = None):
         super().__init__()
         self.use_coarse = use_coarse
         self.n_prompt = n_prompt
@@ -65,7 +65,14 @@ class PromptedNextScalePredictor(nn.Module):
         self.n_target = n_target
         self.text_emb = nn.Embedding(text_vocab, d_model)
         self.text_pos = nn.Embedding(n_prompt, d_model)
-        self.code_emb = nn.Embedding(code_vocab, d_model)
+        if codebook is not None:
+            # frozen pretrained codebook vectors + trainable projection
+            self.register_buffer("codebook", codebook.detach().clone().float())
+            self.code_proj = nn.Linear(codebook.shape[1], d_model)
+            self.code_emb = None
+        else:
+            self.codebook = None
+            self.code_emb = nn.Embedding(code_vocab, d_model)
         self.cond_pos = nn.Embedding(max(n_cond, 1), d_model)
         self.scale_emb = nn.Embedding(n_scales, d_model)
         self.null_tok = nn.Parameter(torch.zeros(d_model))
@@ -100,10 +107,12 @@ class PromptedNextScalePredictor(nn.Module):
         if self.n_cond > 0:
             pos = self.cond_pos(torch.arange(self.n_cond, device=device))
             sca = self.scale_emb(cond_scale_ids)
-            if self.use_coarse:
-                base = self.code_emb(cond_codes)
-            else:
+            if not self.use_coarse:
                 base = self.null_tok.expand(B, self.n_cond, -1)
+            elif self.codebook is not None:
+                base = self.code_proj(self.codebook[cond_codes])
+            else:
+                base = self.code_emb(cond_codes)
             parts.append(base + pos + sca)
         q = (self.query_base + self.query_pos(
             torch.arange(self.n_target, device=device))).expand(B, -1, -1)
@@ -133,11 +142,12 @@ def train_and_eval_prompted(prompts_tr, codes_tr, prompts_va, codes_va,
                             cond_cols, target_cols, cond_scale_ids,
                             text_vocab, code_vocab, n_scales, device,
                             steps, batch_size, lr=3e-4, use_coarse=True,
-                            seed=0, label=""):
+                            seed=0, label="", codebook=None):
     torch.manual_seed(seed)
     model = PromptedNextScalePredictor(
         text_vocab, code_vocab, prompts_tr.shape[1], len(cond_cols),
-        len(target_cols), n_scales, use_coarse=use_coarse).to(device)
+        len(target_cols), n_scales, use_coarse=use_coarse,
+        codebook=codebook).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     ptr = torch.from_numpy(prompts_tr.astype(np.int64))
     ctr = torch.from_numpy(codes_tr.astype(np.int64))
@@ -185,6 +195,7 @@ def main():
     ap.add_argument("--val_windows", type=int, default=2000)
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--batch_size", type=int, default=64)
+    ap.add_argument("--code_input", default="codebook", choices=["codebook", "learned"])
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
@@ -218,6 +229,11 @@ def main():
                               autocast_dtype=autocast_dtype)
     prompts_tr_all = dump_prompt_ids(train_ds, codes_tr_all.shape[0])
     prompts_va_all = dump_prompt_ids(val_ds, codes_va_all.shape[0])
+    codebook = None
+    if args.code_input == "codebook":
+        assert cfg.quantizer.shared_codebook, \
+            "--code_input codebook requires a shared codebook"
+        codebook = model.msrvq.vq.embed.detach().clone()
     del model
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -230,7 +246,8 @@ def main():
 
     LN2 = math.log(2)
     kw = dict(text_vocab=text_vocab, code_vocab=code_vocab, n_scales=K,
-              device=device, steps=args.steps, batch_size=args.batch_size)
+              device=device, steps=args.steps, batch_size=args.batch_size,
+              codebook=codebook)
 
     transitions = []
     for k in range(K - 1):
@@ -264,10 +281,11 @@ def main():
         "prompt": "previous 256-token window raw text",
         "n_train_pairs": int(codes_tr.shape[0]), "n_val_pairs": int(codes_va.shape[0]),
         "probe": {"d_model": 256, "n_layers": 4, "steps": args.steps,
-                  "batch_size": args.batch_size},
+                  "batch_size": args.batch_size, "code_input": args.code_input},
         "transitions": transitions,
     }
-    out_path = Path(args.out) if args.out else out_dir / "next_scale_probe_prompted.json"
+    out_path = (Path(args.out) if args.out
+                else out_dir / f"next_scale_probe_prompted_{args.code_input}.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(report, f, indent=2)
