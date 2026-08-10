@@ -66,9 +66,10 @@ class PromptedNextScalePredictor(nn.Module):
         self.text_emb = nn.Embedding(text_vocab, d_model)
         self.text_pos = nn.Embedding(n_prompt, d_model)
         if codebook is not None:
-            # frozen pretrained codebook vectors + trainable projection
+            # frozen pretrained codebook vectors + trainable projections
             self.register_buffer("codebook", codebook.detach().clone().float())
             self.code_proj = nn.Linear(codebook.shape[1], d_model)
+            self.init_proj = nn.Linear(codebook.shape[1], d_model)
             self.code_emb = None
         else:
             self.codebook = None
@@ -99,7 +100,8 @@ class PromptedNextScalePredictor(nn.Module):
                 nn.init.normal_(m.weight, std=0.02)
 
     def forward(self, prompt_ids: torch.Tensor, cond_codes: torch.Tensor,
-                cond_scale_ids: torch.Tensor):
+                cond_scale_ids: torch.Tensor,
+                init_latent: torch.Tensor | None = None):
         B = prompt_ids.shape[0]
         device = prompt_ids.device
         parts = [self.text_emb(prompt_ids)
@@ -114,8 +116,12 @@ class PromptedNextScalePredictor(nn.Module):
             else:
                 base = self.code_emb(cond_codes)
             parts.append(base + pos + sca)
-        q = (self.query_base + self.query_pos(
-            torch.arange(self.n_target, device=device))).expand(B, -1, -1)
+        qpos = self.query_pos(torch.arange(self.n_target, device=device))
+        if self.use_coarse and self.codebook is not None:
+            assert init_latent is not None, "codebook mode requires init_latent"
+            q = self.init_proj(init_latent.float()) + qpos
+        else:
+            q = (self.query_base + qpos).expand(B, -1, -1)
         parts.append(q)
         h = torch.cat(parts, dim=1)
         L = h.shape[1]
@@ -142,12 +148,24 @@ def train_and_eval_prompted(prompts_tr, codes_tr, prompts_va, codes_va,
                             cond_cols, target_cols, cond_scale_ids,
                             text_vocab, code_vocab, n_scales, device,
                             steps, batch_size, lr=3e-4, use_coarse=True,
-                            seed=0, label="", codebook=None):
+                            seed=0, label="", codebook=None,
+                            scales=None, cond_idxs=None, target_l=None,
+                            seq_len=256, upsample_mode="nearest-exact"):
+    from experiments.exp5_next_scale_probe.probe_next_scale import accumulated_init_latent
     torch.manual_seed(seed)
     model = PromptedNextScalePredictor(
         text_vocab, code_vocab, prompts_tr.shape[1], len(cond_cols),
         len(target_cols), n_scales, use_coarse=use_coarse,
         codebook=codebook).to(device)
+    cb_dev = codebook.to(device).float() if codebook is not None else None
+    var_mode = use_coarse and cb_dev is not None
+
+    def init_for(rows):
+        if not var_mode:
+            return None
+        return accumulated_init_latent(rows, scales, cond_idxs, target_l,
+                                       cb_dev, seq_len, upsample_mode)
+
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     ptr = torch.from_numpy(prompts_tr.astype(np.int64))
     ctr = torch.from_numpy(codes_tr.astype(np.int64))
@@ -158,7 +176,7 @@ def train_and_eval_prompted(prompts_tr, codes_tr, prompts_va, codes_va,
         idx = torch.randint(0, ptr.shape[0], (batch_size,), generator=g)
         p = ptr[idx].to(device)
         rows = ctr[idx].to(device)
-        logits = model(p, rows[:, cond_cols], sid)
+        logits = model(p, rows[:, cond_cols], sid, init_for(rows))
         loss = F.cross_entropy(logits.reshape(-1, code_vocab),
                                rows[:, target_cols].reshape(-1))
         opt.zero_grad(set_to_none=True)
@@ -175,7 +193,7 @@ def train_and_eval_prompted(prompts_tr, codes_tr, prompts_va, codes_va,
         for start in range(0, pva.shape[0], batch_size):
             p = pva[start:start + batch_size].to(device)
             rows = cva[start:start + batch_size].to(device)
-            logits = model(p, rows[:, cond_cols], sid)
+            logits = model(p, rows[:, cond_cols], sid, init_for(rows))
             ce = F.cross_entropy(logits.reshape(-1, code_vocab),
                                  rows[:, target_cols].reshape(-1), reduction="sum")
             ce_sum += float(ce)
@@ -247,7 +265,8 @@ def main():
     LN2 = math.log(2)
     kw = dict(text_vocab=text_vocab, code_vocab=code_vocab, n_scales=K,
               device=device, steps=args.steps, batch_size=args.batch_size,
-              codebook=codebook)
+              codebook=codebook, scales=scales, seq_len=cfg.model.seq_len,
+              upsample_mode=cfg.quantizer.upsample_mode)
 
     transitions = []
     for k in range(K - 1):
@@ -258,11 +277,13 @@ def main():
         ce_tc = train_and_eval_prompted(prompts_tr, codes_tr, prompts_va, codes_va,
                                         cond_cols, tgt_cols, sids,
                                         use_coarse=True, label=label + " text+coarse",
-                                        **kw)
+                                        cond_idxs=list(range(k + 1)),
+                                        target_l=scales[tgt], **kw)
         ce_t = train_and_eval_prompted(prompts_tr, codes_tr, prompts_va, codes_va,
                                        cond_cols, tgt_cols, sids,
                                        use_coarse=False, label=label + " text-only",
-                                       **kw)
+                                       cond_idxs=list(range(k + 1)),
+                                       target_l=scales[tgt], **kw)
         transitions.append({
             "target_scale": scales[tgt],
             "cond_scales": scales[:k + 1],

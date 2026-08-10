@@ -46,18 +46,22 @@ from utils.logging import log_line
 
 
 class NextScalePredictor(nn.Module):
-    """Bidirectional transformer: [cond tokens] + [target query slots] ->
-    per-slot logits. `conditioned=False` swaps real code embeddings for a
-    learned null vector (same shapes, same parameter count in the graph).
+    """VAR-faithful next-scale predictor (mirrors VAR Fig. "Stage 2").
 
-    Conditioning-code representation (`codebook` argument):
-      - pretrained codebook vectors (frozen) + trainable projection — the
-        DEFAULT and the faithful Stage-1 interface (a VAR planner consumes
-        dequantized codebook vectors, and rare codes inherit the tokenizer's
-        geometry for free);
-      - codebook=None falls back to a from-scratch nn.Embedding over code ids
-        (the original probe; underestimates coupling for rare codes because
-        their embeddings are undertrained)."""
+    Input sequence = [coarse context tokens] + [target initial tokens]:
+      - context tokens: frozen pretrained codebook vectors of the coarse
+        codes + trainable projection (+ scale/pos embeddings) — the
+        block-causal context in VAR;
+      - target INITIAL tokens ("e_k" in VAR): the accumulated dequantized
+        latent of scales <= k, interpolated to the target scale's grid and
+        projected — NOT content-free learnable queries. Each target position
+        receives its spatially-aligned coarse content for free, exactly like
+        VAR's word-embedding + up-interpolation.
+
+    `conditioned=False` (control): context nulled AND initial tokens replaced
+    by a learnable constant — identical architecture, no coarse information.
+    Legacy mode (codebook=None): from-scratch id embeddings + learnable
+    queries (the original, unfaithful probe; kept for comparison)."""
 
     def __init__(self, vocab: int, n_cond: int, n_target: int, n_scales: int,
                  d_model: int = 256, n_layers: int = 4, n_heads: int = 4,
@@ -69,6 +73,7 @@ class NextScalePredictor(nn.Module):
         if codebook is not None:
             self.register_buffer("codebook", codebook.detach().clone().float())
             self.code_proj = nn.Linear(codebook.shape[1], d_model)
+            self.init_proj = nn.Linear(codebook.shape[1], d_model)
             self.code_emb = None
         else:
             self.codebook = None
@@ -98,8 +103,11 @@ class NextScalePredictor(nn.Module):
             elif isinstance(m, nn.Embedding):
                 nn.init.normal_(m.weight, std=0.02)
 
-    def forward(self, cond_codes: torch.Tensor, cond_scale_ids: torch.Tensor):
-        # cond_codes: [B, n_cond] long; cond_scale_ids: [n_cond] long
+    def forward(self, cond_codes: torch.Tensor, cond_scale_ids: torch.Tensor,
+                init_latent: torch.Tensor | None = None):
+        # cond_codes: [B, n_cond] long; cond_scale_ids: [n_cond] long;
+        # init_latent: [B, n_target, d_code] accumulated dequantized latent
+        # pooled to the target grid (required in codebook mode when conditioned)
         B = cond_codes.shape[0]
         device = cond_codes.device
         parts = []
@@ -113,8 +121,12 @@ class NextScalePredictor(nn.Module):
             else:
                 base = self.code_emb(cond_codes)
             parts.append(base + pos + sca)
-        q = (self.query_base + self.query_pos(
-            torch.arange(self.n_target, device=device))).expand(B, -1, -1)
+        qpos = self.query_pos(torch.arange(self.n_target, device=device))
+        if self.conditioned and self.codebook is not None:
+            assert init_latent is not None, "codebook mode requires init_latent"
+            q = self.init_proj(init_latent.float()) + qpos
+        else:
+            q = (self.query_base + qpos).expand(B, -1, -1)
         parts.append(q)
         h = torch.cat(parts, dim=1)
         L = h.shape[1]
@@ -128,12 +140,49 @@ class NextScalePredictor(nn.Module):
         return self.head(self.ln_f(h[:, -self.n_target:]))  # [B, n_target, vocab]
 
 
+@torch.no_grad()
+def accumulated_init_latent(code_rows: torch.Tensor, scales: list[int],
+                            cond_idxs: list[int], target_l: int,
+                            codebook: torch.Tensor, seq_len: int,
+                            upsample_mode: str = "nearest-exact") -> torch.Tensor:
+    """VAR's e_k: dequantize the conditioning scales with the FROZEN codebook,
+    upsample each to full resolution exactly as the tokenizer does, sum, then
+    interpolate onto the target scale's grid. [B, total_codes] -> [B, target_l, d_code].
+    Matches MultiScaleResidualVQ's dequant path (phi off) — unit-tested."""
+    segs = scale_segments(scales)
+    B = code_rows.shape[0]
+    acc = torch.zeros(B, seq_len, codebook.shape[1],
+                      device=code_rows.device, dtype=torch.float32)
+    for i in sorted(cond_idxs):
+        a, b = segs[i]
+        e = codebook[code_rows[:, a:b]]                     # [B, l_i, d_code]
+        if scales[i] == seq_len:
+            acc += e
+        else:
+            u = F.interpolate(e.transpose(1, 2), size=seq_len, mode=upsample_mode)
+            acc += u.transpose(1, 2)
+    if target_l == seq_len:
+        return acc
+    return F.adaptive_avg_pool1d(acc.transpose(1, 2), target_l).transpose(1, 2)
+
+
 def train_and_eval(train_codes, val_codes, cond_cols, target_cols, cond_scale_ids,
                    vocab, n_scales, device, steps, batch_size, lr=3e-4,
-                   conditioned=True, seed=0, label="", codebook=None):
+                   conditioned=True, seed=0, label="", codebook=None,
+                   scales=None, cond_idxs=None, target_l=None, seq_len=256,
+                   upsample_mode="nearest-exact"):
     torch.manual_seed(seed)
     model = NextScalePredictor(vocab, len(cond_cols), len(target_cols), n_scales,
                                conditioned=conditioned, codebook=codebook).to(device)
+    cb_dev = codebook.to(device).float() if codebook is not None else None
+    var_mode = conditioned and cb_dev is not None
+
+    def init_for(rows):
+        if not var_mode:
+            return None
+        return accumulated_init_latent(rows, scales, cond_idxs, target_l,
+                                       cb_dev, seq_len, upsample_mode)
+
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     tr = torch.from_numpy(train_codes.astype(np.int64))
     sid = torch.as_tensor(cond_scale_ids, dtype=torch.long, device=device)
@@ -142,7 +191,7 @@ def train_and_eval(train_codes, val_codes, cond_cols, target_cols, cond_scale_id
     for step in range(1, steps + 1):
         idx = torch.randint(0, tr.shape[0], (batch_size,), generator=g)
         rows = tr[idx].to(device)
-        logits = model(rows[:, cond_cols], sid)
+        logits = model(rows[:, cond_cols], sid, init_for(rows))
         loss = F.cross_entropy(logits.reshape(-1, vocab),
                                rows[:, target_cols].reshape(-1))
         opt.zero_grad(set_to_none=True)
@@ -157,7 +206,7 @@ def train_and_eval(train_codes, val_codes, cond_cols, target_cols, cond_scale_id
     with torch.no_grad():
         for start in range(0, va.shape[0], batch_size):
             rows = va[start:start + batch_size].to(device)
-            logits = model(rows[:, cond_cols], sid)
+            logits = model(rows[:, cond_cols], sid, init_for(rows))
             ce = F.cross_entropy(logits.reshape(-1, vocab),
                                  rows[:, target_cols].reshape(-1), reduction="sum")
             ce_sum += float(ce)
@@ -240,7 +289,8 @@ def main():
 
     LN2 = math.log(2)
     kw = dict(vocab=vocab, n_scales=K, device=device, steps=args.steps,
-              batch_size=args.batch_size, codebook=codebook)
+              batch_size=args.batch_size, codebook=codebook, scales=scales,
+              seq_len=cfg.model.seq_len, upsample_mode=cfg.quantizer.upsample_mode)
 
     transitions = []
     full_coarse_ce = None  # reused by Probe D's all-coarse condition
@@ -250,11 +300,13 @@ def main():
         tgt_cols, _ = cols_for_scales(scales, [tgt])
         label = f"cond(<=q{scales[k]})->q{scales[tgt]}"
         ce_c = train_and_eval(train_codes, val_codes, cond_cols, tgt_cols, sids,
-                              conditioned=True, label=label + " cond", **kw)
+                              conditioned=True, label=label + " cond",
+                              cond_idxs=list(range(k + 1)), target_l=scales[tgt], **kw)
         if tgt == K - 1:
             full_coarse_ce = ce_c
         ce_0 = train_and_eval(train_codes, val_codes, cond_cols, tgt_cols, sids,
-                              conditioned=False, label=label + " ctrl", **kw)
+                              conditioned=False, label=label + " ctrl",
+                              cond_idxs=list(range(k + 1)), target_l=scales[tgt], **kw)
         ce_u = unigram_ce(train_codes, val_codes, tgt_cols, vocab)
         transitions.append({
             "target_scale": scales[tgt],
@@ -288,7 +340,8 @@ def main():
             ce_c = full_coarse_ce  # canonical number from the transitions loop
         else:
             ce_c = train_and_eval(train_codes, val_codes, cond_cols, tgt_cols, sids,
-                                  conditioned=True, label=lbl, **kw)
+                                  conditioned=True, label=lbl,
+                                  cond_idxs=cond_idxs, target_l=scales[K - 1], **kw)
         incremental.append({"cond_scales": [scales[i] for i in cond_idxs],
                             "target_scale": scales[K - 1],
                             "ce_cond_bits": ce_c / LN2,

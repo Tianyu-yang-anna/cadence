@@ -1,9 +1,11 @@
 import numpy as np
 import pytest
 import torch
+import torch.nn.functional as F
 
 from models.text_vqvae import TextVQVAE
-from experiments.exp5_next_scale_probe.probe_next_scale import NextScalePredictor, cols_for_scales, unigram_ce
+from experiments.exp5_next_scale_probe.probe_next_scale import (
+    NextScalePredictor, accumulated_init_latent, cols_for_scales, unigram_ce)
 
 
 def build(tiny_cfg):
@@ -95,20 +97,52 @@ def test_readout_freeze_and_sampling(tiny_cfg, tmp_path):
 
 
 def test_next_scale_predictor_codebook_input():
-    """Codebook mode: frozen pretrained vectors + trainable projection; the
-    codebook buffer must never receive gradients."""
+    """Codebook mode: frozen pretrained vectors + trainable projections; the
+    codebook buffer must never receive gradients; VAR-style init tokens are
+    required and consumed."""
     torch.manual_seed(0)
     cb = torch.randn(64, 16)
     model = NextScalePredictor(vocab=64, n_cond=3, n_target=4, n_scales=3,
                                codebook=cb)
     cond = torch.randint(0, 64, (2, 3))
     sids = torch.tensor([0, 1, 1])
-    out = model(cond, sids)
+    init = torch.randn(2, 4, 16)
+    out = model(cond, sids, init)
     assert out.shape == (2, 4, 64)
     out.sum().backward()
-    assert model.codebook.grad is None          # frozen buffer
-    assert model.code_proj.weight.grad is not None  # projection trains
-    assert torch.equal(model.codebook, cb)      # values untouched
+    assert model.codebook.grad is None              # frozen buffer
+    assert model.code_proj.weight.grad is not None  # context projection trains
+    assert model.init_proj.weight.grad is not None  # init projection trains
+    assert torch.equal(model.codebook, cb)          # values untouched
+    with pytest.raises(AssertionError):
+        model(cond, sids)  # conditioned codebook mode requires init_latent
+    # init tokens actually influence the output
+    with torch.no_grad():
+        a = model(cond, sids, init)
+        b = model(cond, sids, init + 1.0)
+    assert not torch.allclose(a, b)
+
+
+def test_init_latent_matches_tokenizer(tiny_cfg):
+    """The probe's VAR-style initial tokens must be built EXACTLY like the
+    tokenizer's dequant path: accumulated_init_latent(codes) == pooled sum of
+    msrvq contributions (phi off). Guards against probe/tokenizer drift."""
+    model = build(tiny_cfg).eval()
+    ids, _ = batch(tiny_cfg)
+    with torch.no_grad():
+        z = model.encode(ids)
+        ms = model.msrvq(z, update=False)
+    scales = model.msrvq.scales
+    seq_len = tiny_cfg.model.seq_len
+    codes_flat = torch.cat([c.reshape(ids.shape[0], -1) for c in ms.codes], dim=1)
+    cb = model.msrvq.vq.embed
+    for k in range(1, len(scales)):
+        init = accumulated_init_latent(codes_flat, scales, list(range(k)),
+                                       scales[k], cb, seq_len,
+                                       tiny_cfg.quantizer.upsample_mode)
+        ref = torch.stack([c.detach() for c in ms.contribs[:k]]).sum(0)
+        ref = F.adaptive_avg_pool1d(ref.transpose(1, 2), scales[k]).transpose(1, 2)
+        assert torch.allclose(init, ref.float(), atol=1e-5), f"k={k}"
 
 
 def test_next_scale_predictor_no_leak():
