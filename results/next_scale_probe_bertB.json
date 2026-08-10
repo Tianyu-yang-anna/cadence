@@ -1,0 +1,144 @@
+{
+ "ckpt": "/tmp/cadence_local/runs/vqvae_wt103_bertB/ckpt_step50000.pt",
+ "step": 50000,
+ "scales": [
+  8,
+  16,
+  32,
+  64,
+  128,
+  256
+ ],
+ "n_train_windows": 50000,
+ "n_val_windows": 932,
+ "probe": {
+  "d_model": 256,
+  "n_layers": 4,
+  "steps": 2000,
+  "batch_size": 128,
+  "factorization": "parallel per-position, conditionally independent given coarse scales (VAR)"
+ },
+ "transitions": [
+  {
+   "target_scale": 16,
+   "cond_scales": [
+    8
+   ],
+   "ce_cond_bits": 13.285268668460217,
+   "ce_control_bits": 12.826122218716314,
+   "ce_unigram_bits": 12.844746919913993,
+   "gain_bits_vs_control": -0.45914644974390245,
+   "gain_bits_vs_unigram": -0.4405217485462248,
+   "rel_ce_reduction_pct": -3.5797760376390326,
+   "ppl_cond": 9983.075823051275,
+   "ppl_control": 7261.854045769061
+  },
+  {
+   "target_scale": 32,
+   "cond_scales": [
+    8,
+    16
+   ],
+   "ce_cond_bits": 12.905994303997788,
+   "ce_control_bits": 12.598870668103766,
+   "ce_unigram_bits": 12.654175329197551,
+   "gain_bits_vs_control": -0.30712363589402264,
+   "gain_bits_vs_unigram": -0.25181897480023635,
+   "rel_ce_reduction_pct": -2.4377076643191486,
+   "ppl_cond": 7675.230189621827,
+   "ppl_control": 6203.517084168434
+  },
+  {
+   "target_scale": 64,
+   "cond_scales": [
+    8,
+    16,
+    32
+   ],
+   "ce_cond_bits": 13.114966623204163,
+   "ce_control_bits": 12.950919278424593,
+   "ce_unigram_bits": 13.027542281365804,
+   "gain_bits_vs_control": -0.16404734477957067,
+   "gain_bits_vs_unigram": -0.08742434183835845,
+   "rel_ce_reduction_pct": -1.2666849453139835,
+   "ppl_cond": 8871.526327529342,
+   "ppl_control": 7917.994107690826
+  },
+  {
+   "target_scale": 128,
+   "cond_scales": [
+    8,
+    16,
+    32,
+    64
+   ],
+   "ce_cond_bits": 13.016449811644142,
+   "ce_control_bits": 12.968230659379024,
+   "ce_unigram_bits": 13.040934012308636,
+   "gain_bits_vs_control": -0.048219152265116506,
+   "gain_bits_vs_unigram": 0.024484200664494082,
+   "rel_ce_reduction_pct": -0.3718252206614086,
+   "ppl_cond": 8285.940881289755,
+   "ppl_control": 8013.57708996819
+  },
+  {
+   "target_scale": 256,
+   "cond_scales": [
+    8,
+    16,
+    32,
+    64,
+    128
+   ],
+   "ce_cond_bits": 12.744738930001061,
+   "ce_control_bits": 12.829407420979376,
+   "ce_unigram_bits": 12.903011817139781,
+   "gain_bits_vs_control": 0.08466849097831412,
+   "gain_bits_vs_unigram": 0.1582728871387207,
+   "rel_ce_reduction_pct": 0.6599563658712669,
+   "ppl_cond": 6863.548467538881,
+   "ppl_control": 7278.409063731318
+  }
+ ],
+ "incremental_finest": [
+  {
+   "cond_scales": [
+    128
+   ],
+   "target_scale": 256,
+   "ce_cond_bits": 12.774997483781569,
+   "ppl_cond": 7009.022225877483
+  },
+  {
+   "cond_scales": [
+    64,
+    128
+   ],
+   "target_scale": 256,
+   "ce_cond_bits": 12.766741324502888,
+   "ppl_cond": 6969.0260123902
+  },
+  {
+   "cond_scales": [
+    32,
+    64,
+    128
+   ],
+   "target_scale": 256,
+   "ce_cond_bits": 12.753040911953413,
+   "ppl_cond": 6903.158584320913
+  },
+  {
+   "cond_scales": [
+    8,
+    16,
+    32,
+    64,
+    128
+   ],
+   "target_scale": 256,
+   "ce_cond_bits": 12.744738930001061,
+   "ppl_cond": 6863.548467538881
+  }
+ ]
+}

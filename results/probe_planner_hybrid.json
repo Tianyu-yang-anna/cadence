@@ -1,0 +1,140 @@
+{
+ "ckpt": "/tmp/cadence_local/runs/vqvae_wt103_hybrid/ckpt_step50000.pt",
+ "step": 50000,
+ "scales": [
+  1,
+  8,
+  16,
+  32,
+  64,
+  128,
+  256
+ ],
+ "n_train_windows": 50000,
+ "n_val_windows": 932,
+ "ar_per_scale": [
+  {
+   "l": 1,
+   "ar_ce_nats": 4.243253419327633,
+   "ar_ce_bits": 6.121720665299113
+  },
+  {
+   "l": 8,
+   "ar_ce_nats": 8.307356974773525,
+   "ar_ce_bits": 11.984982710400105
+  },
+  {
+   "l": 16,
+   "ar_ce_nats": 8.625864314131215,
+   "ar_ce_bits": 12.444491669378184
+  },
+  {
+   "l": 32,
+   "ar_ce_nats": 8.580378582053559,
+   "ar_ce_bits": 12.378869629278546
+  },
+  {
+   "l": 64,
+   "ar_ce_nats": 8.724609459266706,
+   "ar_ce_bits": 12.586950800577018
+  },
+  {
+   "l": 128,
+   "ar_ce_nats": 8.56257251141265,
+   "ar_ce_bits": 12.353180899467189
+  },
+  {
+   "l": 256,
+   "ar_ce_nats": 7.598976922478545,
+   "ar_ce_bits": 10.963006321889473
+  }
+ ],
+ "unigram_per_scale": [
+  {
+   "l": 1,
+   "unigram_entropy_nats": 4.285918404223151,
+   "unigram_entropy_bits": 6.183273227427479,
+   "max_bits": 13.0
+  },
+  {
+   "l": 8,
+   "unigram_entropy_nats": 8.483954680418188,
+   "unigram_entropy_bits": 12.23975934456603,
+   "max_bits": 13.0
+  },
+  {
+   "l": 16,
+   "unigram_entropy_nats": 8.766532816691797,
+   "unigram_entropy_bits": 12.64743342043161,
+   "max_bits": 13.0
+  },
+  {
+   "l": 32,
+   "unigram_entropy_nats": 8.727628331433294,
+   "unigram_entropy_bits": 12.591306112480833,
+   "max_bits": 13.0
+  },
+  {
+   "l": 64,
+   "unigram_entropy_nats": 8.952636293657747,
+   "unigram_entropy_bits": 12.915923983742582,
+   "max_bits": 13.0
+  },
+  {
+   "l": 128,
+   "unigram_entropy_nats": 8.97439412057934,
+   "unigram_entropy_bits": 12.947313892742885,
+   "max_bits": 13.0
+  },
+  {
+   "l": 256,
+   "unigram_entropy_nats": 8.872684781718656,
+   "unigram_entropy_bits": 12.80057833395648,
+   "max_bits": 13.0
+  }
+ ],
+ "adjacent_agreement": [
+  {
+   "l": 1,
+   "adjacent_agreement": 0.58645,
+   "random_agreement": 0.02595,
+   "lift": 22.59922928709056
+  },
+  {
+   "l": 8,
+   "adjacent_agreement": 0.00120625,
+   "random_agreement": 0.0003375,
+   "lift": 3.574074074074074
+  },
+  {
+   "l": 16,
+   "adjacent_agreement": 0.0002625,
+   "random_agreement": 0.000228125,
+   "lift": 1.1506849315068493
+  },
+  {
+   "l": 32,
+   "adjacent_agreement": 0.0003359375,
+   "random_agreement": 0.000225,
+   "lift": 1.4930555555555556
+  },
+  {
+   "l": 64,
+   "adjacent_agreement": 0.00021484375,
+   "random_agreement": 0.000134375,
+   "lift": 1.5988372093023255
+  },
+  {
+   "l": 128,
+   "adjacent_agreement": 0.00021796875,
+   "random_agreement": 0.0001421875,
+   "lift": 1.5329670329670328
+  },
+  {
+   "l": 256,
+   "adjacent_agreement": 0.000194140625,
+   "random_agreement": 0.000157421875,
+   "lift": 1.2332506203473945
+  }
+ ]
+}

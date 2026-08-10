@@ -148,3 +148,23 @@ schedule = **hybrid [1, 8, 16, 32, 64, 128, 256]** — the l=1 topic-anchor
 code (98x document consistency, planner-predictable) plus the
 budget-efficient dense ramp from 8; scale_dropout 0.5; shared codebook;
 no phi. Worth one confirmation run before Stage 1 freezes the tokenizer.
+
+## Results round 3: Next-3 experiments (need_next3.md, 2026-08-09/10)
+
+Full write-up: `results/hybrid_schedule_summary.md` (+ per-run JSONs in
+`results/`). Headlines:
+1. **bertHybrid** [1,8..256]: full 99.44% (parity with bertB), ramp -1.4 to
+   -2pp vs bertB; q1 anchor survives diluted (22.6x doc lift vs bertPilot's
+   103.8x).
+2. **No redundant scales** (leave-one-scale-out with a subset-readout
+   decoder; raw-mode deltas were ~2x inflated by decoder OOD, as predicted).
+3. **Strict next-scale probe: coarse codes do NOT reduce finer-code
+   uncertainty** (gain ~0 across all transitions, both schedules; q1 adds
+   zero planner-prediction value). Residual quantization decorrelates scales
+   by construction — explains non-redundancy AND unpredictability at once.
+   The Stage-1 premise fails in unconditional code space; prompt-conditioned
+   coupling is untested (recommended next probe).
+4. **Freeze verdict: not yet.** Criteria 1 marginal / 2 pass / 3 pass /
+   4 FAIL / 5 half. If forced to freeze now: bertB (q1 costs ramp and adds
+   no planner value). Stage 0.5: prompt-conditioned probe, then cross-scale
+   coupling loss in tokenizer training.

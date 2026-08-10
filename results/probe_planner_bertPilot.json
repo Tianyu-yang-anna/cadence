@@ -1,0 +1,86 @@
+{
+ "ckpt": "/tmp/cadence_local/runs/vqvae_wt103_bertPilot/ckpt_step50000.pt",
+ "step": 50000,
+ "scales": [
+  1,
+  2,
+  4,
+  256
+ ],
+ "n_train_windows": 50000,
+ "n_val_windows": 932,
+ "ar_per_scale": [
+  {
+   "l": 1,
+   "ar_ce_nats": 6.040629266157683,
+   "ar_ce_bits": 8.714785886134427
+  },
+  {
+   "l": 2,
+   "ar_ce_nats": 6.611022645567619,
+   "ar_ce_bits": 9.53768958596504
+  },
+  {
+   "l": 4,
+   "ar_ce_nats": 6.387599950504406,
+   "ar_ce_bits": 9.215358771775294
+  },
+  {
+   "l": 256,
+   "ar_ce_nats": 6.315340919410935,
+   "ar_ce_bits": 9.111111025957303
+  }
+ ],
+ "unigram_per_scale": [
+  {
+   "l": 1,
+   "unigram_entropy_nats": 5.967651241673357,
+   "unigram_entropy_bits": 8.609500852117018,
+   "max_bits": 13.0
+  },
+  {
+   "l": 2,
+   "unigram_entropy_nats": 6.653906179503383,
+   "unigram_entropy_bits": 9.599557447709959,
+   "max_bits": 13.0
+  },
+  {
+   "l": 4,
+   "unigram_entropy_nats": 6.481708730671898,
+   "unigram_entropy_bits": 9.351129042227045,
+   "max_bits": 13.0
+  },
+  {
+   "l": 256,
+   "unigram_entropy_nats": 8.563498826014984,
+   "unigram_entropy_bits": 12.354517288950277,
+   "max_bits": 13.0
+  }
+ ],
+ "adjacent_agreement": [
+  {
+   "l": 1,
+   "adjacent_agreement": 0.41515,
+   "random_agreement": 0.004,
+   "lift": 103.78750000000001
+  },
+  {
+   "l": 2,
+   "adjacent_agreement": 0.0128,
+   "random_agreement": 0.0016,
+   "lift": 8.0
+  },
+  {
+   "l": 4,
+   "adjacent_agreement": 0.0031125,
+   "random_agreement": 0.001825,
+   "lift": 1.7054794520547945
+  },
+  {
+   "l": 256,
+   "adjacent_agreement": 0.001391796875,
+   "random_agreement": 0.00028359375,
+   "lift": 4.90771349862259
+  }
+ ]
+}
