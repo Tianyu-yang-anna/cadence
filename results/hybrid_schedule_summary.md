@@ -95,19 +95,43 @@ recommended next experiment before any Stage 1 commitment.
 | 4. coarse scales reduce finer-scale uncertainty | **FAIL** (gain ~0 everywhere, both schedules; structural) |
 | 5. q1 semantic or planner value | **half**: semantic yes (22.6x doc lift), planner-prediction no (ablation = 0) |
 
-**Recommendation: do NOT freeze the tokenizer yet.** Reconstruction and
-hierarchy shape are solved; the strict next-scale premise is not. Stage 0.5
-candidates, in order of leverage:
-1. **Prompt-conditioned next-scale probe** (cheap, eval-only): does coarse
-   conditioning help GIVEN text? If yes, current tokenizer is fine for
-   Stage 1 as-is and criterion 4 was mis-specified for prompt-driven
-   generation.
-2. **Cross-scale coupling loss in tokenizer training**: auxiliary head
-   predicting scale k+1 codes from accumulated latent <=k, weighted lightly —
-   directly optimizes criterion 4; retrain one model, rerun Exp 3.
+## 3b. Prompt-conditioned follow-up (run 605558091889954, bertB)
+
+Prompt = previous 256-token window's raw text; capacity-matched text-only vs
+text+coarse predictors per transition:
+
+| transition | text-only (bits) | text+coarse | gain |
+|---|---|---|---|
+| ->q16 | 12.96 | 13.05 | -0.09 |
+| ->q32 | 12.73 | 12.65 | +0.08 |
+| ->q64 | 12.97 | 12.95 | +0.02 |
+| ->q128 | 12.97 | 12.94 | +0.03 |
+| ->q256 | 12.81 | 12.75 | +0.06 |
+
+**Gains stay ~0 with the prompt in hand** (all within ~±0.05-bit sampling
+noise of the 931-pair val set). Two additional observations: (a) the prompt
+itself adds almost nothing over the unconditional control (12.81 vs 12.83
+bits at ->q256) — window-level code identity is intrinsically high-entropy;
+(b) caveat: the 4L probe is a weak text reader (a real planner would use a
+proper text encoder), but the DIFFERENTIAL text+coarse vs text-only is the
+controlled quantity and it is zero.
+
+## Final verdict (amended)
+
+Criterion 4 fails in BOTH the unconditional and the prompt-conditioned
+setting. **Do not freeze; the tokenizer needs Stage 0.5 surgery before
+Stage 1.** Ranked options:
+1. **Cross-scale coupling loss in tokenizer training**: auxiliary head
+   predicting scale k+1 codes from accumulated latent <=k, small weight —
+   directly optimizes what Stage 1 needs; retrain one bertB-schedule model
+   (~6.5h), rerun Exp 3 to confirm gains appear.
+2. Rethink the planner interface: predicting exact residual-code identities
+   (8192-way, near-uniform) may be the wrong target — e.g. predict the
+   accumulated/dequantized latent (continuous, then quantize), which sidesteps
+   per-code entropy.
 3. Non-residual pyramid variant (quantize accumulated, not residual) as a
    contrast run.
 
 If a freeze is needed immediately regardless: **bertB** (drop q1 — it costs
-ramp efficiency and adds no planner value; its semantic role can be
-delegated to prompt conditioning).
+ramp efficiency and adds no planner value), with the understanding that a
+Stage 1 planner would be predicting nearly-independent high-entropy codes.

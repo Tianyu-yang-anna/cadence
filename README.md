@@ -164,7 +164,11 @@ Full write-up: `results/hybrid_schedule_summary.md` (+ per-run JSONs in
    by construction — explains non-redundancy AND unpredictability at once.
    The Stage-1 premise fails in unconditional code space; prompt-conditioned
    coupling is untested (recommended next probe).
-4. **Freeze verdict: not yet.** Criteria 1 marginal / 2 pass / 3 pass /
-   4 FAIL / 5 half. If forced to freeze now: bertB (q1 costs ramp and adds
-   no planner value). Stage 0.5: prompt-conditioned probe, then cross-scale
-   coupling loss in tokenizer training.
+4. **Prompt-conditioned follow-up: gains stay ~0 even with the previous
+   window's text as prompt** (all transitions within noise; the prompt itself
+   adds ~0.02 bits). Criterion 4 fails in both settings.
+5. **Freeze verdict: do not freeze — Stage 0.5 surgery needed.** Ranked:
+   (a) cross-scale coupling aux loss in tokenizer training + rerun Exp 3;
+   (b) rethink planner target (continuous accumulated latent instead of
+   near-uniform residual code identities); (c) non-residual pyramid contrast.
+   If forced to freeze now: bertB.

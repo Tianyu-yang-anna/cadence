@@ -1,0 +1,93 @@
+{
+  "ckpt": "/tmp/cadence_local/runs/vqvae_wt103_bertB/ckpt_step50000.pt",
+  "step": 50000,
+  "scales": [
+    8,
+    16,
+    32,
+    64,
+    128,
+    256
+  ],
+  "prompt": "previous 256-token window raw text",
+  "n_train_pairs": 49999,
+  "n_val_pairs": 931,
+  "probe": {
+    "d_model": 256,
+    "n_layers": 4,
+    "steps": 2000,
+    "batch_size": 64
+  },
+  "transitions": [
+    {
+      "target_scale": 16,
+      "cond_scales": [
+        8
+      ],
+      "ce_text_only_bits": 12.961563015716385,
+      "ce_text_coarse_bits": 13.046849787894654,
+      "gain_bits": -0.08528677217826942,
+      "rel_ce_reduction_pct": -0.6579975892942541,
+      "ppl_text_only": 7976.626526263125,
+      "ppl_text_coarse": 8462.391921429415
+    },
+    {
+      "target_scale": 32,
+      "cond_scales": [
+        8,
+        16
+      ],
+      "ce_text_only_bits": 12.72690856569773,
+      "ce_text_coarse_bits": 12.650790355262469,
+      "gain_bits": 0.07611821043526107,
+      "rel_ce_reduction_pct": 0.5980887663514697,
+      "ppl_text_only": 6779.243452677874,
+      "ppl_text_coarse": 6430.834985681386
+    },
+    {
+      "target_scale": 64,
+      "cond_scales": [
+        8,
+        16,
+        32
+      ],
+      "ce_text_only_bits": 12.97321305767799,
+      "ce_text_coarse_bits": 12.949834565922135,
+      "gain_bits": 0.02337849175585602,
+      "rel_ce_reduction_pct": 0.18020587229945964,
+      "ppl_text_only": 8041.30010524722,
+      "ppl_text_coarse": 7912.043079249097
+    },
+    {
+      "target_scale": 128,
+      "cond_scales": [
+        8,
+        16,
+        32,
+        64
+      ],
+      "ce_text_only_bits": 12.965951347942191,
+      "ce_text_coarse_bits": 12.935670649673561,
+      "gain_bits": 0.030280698268629856,
+      "rel_ce_reduction_pct": 0.23354011947172443,
+      "ppl_text_only": 8000.926449172744,
+      "ppl_text_coarse": 7834.745246634144
+    },
+    {
+      "target_scale": 256,
+      "cond_scales": [
+        8,
+        16,
+        32,
+        64,
+        128
+      ],
+      "ce_text_only_bits": 12.812769918796777,
+      "ce_text_coarse_bits": 12.749434360450907,
+      "gain_bits": 0.06333555834586985,
+      "rel_ce_reduction_pct": 0.49431589537055837,
+      "ppl_text_only": 7194.954851918109,
+      "ppl_text_coarse": 6885.923130511053
+    }
+  ]
+}
