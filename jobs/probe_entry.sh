@@ -30,7 +30,7 @@ printf '%s\n' "$latest" > "$RUN_DIR/latest.txt"
 log "probing $latest"
 
 # shellcheck disable=SC2086
-(cd "$CODE" && "$PY" probe_planner.py --config "$CONFIG" \
+(cd "$CODE" && "$PY" experiments/exp5_next_scale_probe/probe_planner.py --config "$CONFIG" \
     --set "run_name=$FULL_RUN_NAME" $EXTRA_ARGS --ckpt auto) >> "$LOG_LOCAL" 2>&1
 rc=$?
 push_log

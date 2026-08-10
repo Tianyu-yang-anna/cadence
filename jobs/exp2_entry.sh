@@ -28,7 +28,7 @@ cp -f "$VCK/$latest" "$RUN_DIR/$latest"
 printf '%s\n' "$latest" > "$RUN_DIR/latest.txt"
 
 log "exp2: readout fine-tune (frozen encoder+codebook)"
-(cd "$CODE" && "$PY" finetune_subset_readout.py --config "$CONFIG" \
+(cd "$CODE" && "$PY" experiments/exp4_scale_redundancy/finetune_subset_readout.py --config "$CONFIG" \
     --set "run_name=$FULL_RUN_NAME" --ckpt auto --steps 2000) >> "$LOG_LOCAL" 2>&1
 rc=$?
 push_log
@@ -37,7 +37,7 @@ READOUT="$RUN_DIR/readout_step2000.pt"
 [ -f "$READOUT" ] || { log "readout ckpt missing"; exit 1; }
 
 log "exp2: subset evaluation (raw + readout) on $SPLIT"
-(cd "$CODE" && "$PY" eval_scale_subsets.py --config "$CONFIG" \
+(cd "$CODE" && "$PY" experiments/exp4_scale_redundancy/eval_scale_subsets.py --config "$CONFIG" \
     --set "run_name=$FULL_RUN_NAME" --ckpt auto --split "$SPLIT" \
     --readout "$READOUT") >> "$LOG_LOCAL" 2>&1
 rc=$?

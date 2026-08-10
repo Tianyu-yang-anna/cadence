@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -34,10 +35,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
 from data.wikitext import build_dataset
 from models.text_vqvae import TextVQVAE
-from probe_planner import dump_codes, scale_segments
 from utils.checkpoint import find_resume_ckpt, load_checkpoint
+from utils.codes import dump_codes, scale_segments
 from utils.config import ModelConfig, QuantizerConfig, _build, load_config, resolved_out_dir
 from utils.logging import log_line
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import time
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -32,40 +32,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
 from data.wikitext import build_dataset
 from models.text_vqvae import TextVQVAE
 from utils.checkpoint import find_resume_ckpt, load_checkpoint
+from utils.codes import dump_codes, scale_segments  # noqa: F401 (re-exported)
 from utils.config import ModelConfig, QuantizerConfig, _build, load_config, resolved_out_dir
 from utils.logging import log_line
-
-
-# ---------------------------------------------------------------- code dump
-
-@torch.no_grad()
-def dump_codes(model, dataset, device, n_windows: int, batch_size: int = 64,
-               autocast_dtype=None):
-    """Encode the first n_windows sequentially -> [n, sum(scales)] int32."""
-    from contextlib import nullcontext
-    n = min(n_windows, len(dataset))
-    scales = model.msrvq.scales
-    out = np.zeros((n, sum(scales)), dtype=np.int32)
-    t0 = time.time()
-    for start in range(0, n, batch_size):
-        idx = range(start, min(start + batch_size, n))
-        items = [dataset[i] for i in idx]
-        ids = torch.stack([it["input_ids"] for it in items]).to(device)
-        mask = None
-        if "attention_mask" in items[0]:
-            mask = torch.stack([it["attention_mask"] for it in items]).to(device)
-        ctx = (torch.autocast(device_type=device.type, dtype=autocast_dtype)
-               if autocast_dtype else nullcontext())
-        with ctx:
-            z = model.encode(ids, mask)
-            ms = model.msrvq(z, update=False)
-        flat = torch.cat([c.reshape(len(ids), -1) for c in ms.codes], dim=1)
-        out[start:start + len(ids)] = flat.cpu().numpy()
-    log_line(f"dumped codes for {n} windows in {time.time() - t0:.0f}s")
-    return out
 
 
 # ---------------------------------------------------------------- tiny AR
@@ -115,13 +89,6 @@ class TinyARModel(nn.Module):
         return self.head(self.ln_f(h))  # [B, L, vocab]
 
 
-def scale_segments(scales):
-    """Position ranges of each scale in the flattened sequence."""
-    segs, start = [], 0
-    for l in scales:
-        segs.append((start, start + l))
-        start += l
-    return segs
 
 
 def train_tiny_ar(train_codes: np.ndarray, val_codes: np.ndarray, vocab: int,

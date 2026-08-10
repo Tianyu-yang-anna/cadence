@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from models.text_vqvae import TextVQVAE
-from probe_next_scale import NextScalePredictor, cols_for_scales, unigram_ce
+from experiments.exp5_next_scale_probe.probe_next_scale import NextScalePredictor, cols_for_scales, unigram_ce
 
 
 def build(tiny_cfg):
@@ -55,7 +55,7 @@ def test_readout_freeze_and_sampling(tiny_cfg, tmp_path):
     """One optimizer step on a decoder copy must not touch encoder/codebook."""
     import random
 
-    from finetune_subset_readout import sample_subset
+    from experiments.exp4_scale_redundancy.finetune_subset_readout import sample_subset
     rng = random.Random(0)
     K = 4
     subs = [sample_subset(K, rng) for _ in range(200)]

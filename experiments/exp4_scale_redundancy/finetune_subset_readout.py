@@ -23,11 +23,14 @@ import argparse
 import copy
 import dataclasses
 import random
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 from data.wikitext import build_dataloader
 from models.text_vqvae import TextVQVAE

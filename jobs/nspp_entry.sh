@@ -26,7 +26,7 @@ cp -f "$VCK/$latest" "$RUN_DIR/$latest"
 printf '%s\n' "$latest" > "$RUN_DIR/latest.txt"
 log "prompted next-scale probe on $latest"
 
-(cd "$CODE" && "$PY" probe_next_scale_prompted.py --config "$CONFIG" \
+(cd "$CODE" && "$PY" experiments/exp5_next_scale_probe/probe_next_scale_prompted.py --config "$CONFIG" \
     --set "run_name=$FULL_RUN_NAME" --ckpt auto) >> "$LOG_LOCAL" 2>&1
 rc=$?
 push_log

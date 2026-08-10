@@ -26,9 +26,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 from data.wikitext import build_dataloader
 from models.text_decoder import TextDecoder
