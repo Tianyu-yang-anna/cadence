@@ -141,7 +141,9 @@ CADENCE proposal 要把 VAR（Visual Autoregressive, next-scale prediction）范
 
 **Prompt 条件版补测（bertB，run 605558091889954）**：用前一窗原文做 prompt，容量匹配的 text-only vs text+粗码对照——**增益依然 ≈0**（5 个 transition 全部在 −0.09～+0.08 bits，处于 931 对验证样本的噪声范围内）；且 prompt 本身对预测码也几乎无帮助（12.81 vs 无条件 12.83 bits）——窗口级码身份本质上是高熵对象。标准 ④ 在无条件和 prompt 条件两种设定下都不成立。
 
-**最终结论：不冻结，tokenizer 需要 Stage 0.5 手术**。方案排序：(1) tokenizer 训练加跨尺度耦合辅助损失（用累计 latent ≤k 预测第 k+1 层码，小权重），重训一个 bertB-schedule 模型（~6.5h）复测 Exp 3；(2) 重新考虑 planner 接口——让 planner 预测连续累计 latent 而非近均匀分布的 8192-way 残差码身份；(3) 非残差金字塔变体对照。若必须立刻冻结：选 bertB，但要清楚 Stage 1 planner 将面对近独立的高熵码。
+~~最终结论：不冻结，tokenizer 需要 Stage 0.5 手术~~ **【2026-08-11 勘误推翻，见下】**
+
+**勘误与最终结论（2026-08-11）**：探针存在两处设计错误（用户审查发现）——条件码用 from-scratch id embedding 而非冻结 pretrained codebook；目标位置用可学习 query 而非 VAR 的 e_k（累计反量化 latent 的 up-interpolation）。修正后（探针与 tokenizer 反量化路径单测锁定一致）**所有增益全面转正**：bertB →q256 增益 **+0.73 bits**（旧 +0.08）、bertHybrid **+1.11 bits**；prompt 版 +0.41/+0.60；增量条件强单调；q1 消融复验 +0.07 bits（"零价值"翻案）。**修订判定：五条标准 边缘/✅/✅/✅/✅ → tokenizer 不需要手术，冻结 bertHybrid**（耦合最强+q1 锚+重建持平）。Stage 1 硬性约束：planner 输入接口必须严格按 VAR 构造（偏离即丢失几乎全部跨尺度信号，已实测）；残余熵仍高（11.7/13 bits），prompt 条件承担其余——与 VAR 图像同性质。方法论教训：负面结论对探针接口极其敏感，两版探针结果均归档对照。
 
 详表：`~/cadence/results/hybrid_schedule_summary.md` + 同目录 JSON。
 
