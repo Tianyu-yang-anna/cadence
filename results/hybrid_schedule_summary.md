@@ -116,22 +116,53 @@ bits at ->q256) — window-level code identity is intrinsically high-entropy;
 proper text encoder), but the DIFFERENTIAL text+coarse vs text-only is the
 controlled quantity and it is zero.
 
-## Final verdict (amended)
+## 3c. CORRECTION (2026-08-11): the negative result was a probe artifact
 
-Criterion 4 fails in BOTH the unconditional and the prompt-conditioned
-setting. **Do not freeze; the tokenizer needs Stage 0.5 surgery before
-Stage 1.** Ranked options:
-1. **Cross-scale coupling loss in tokenizer training**: auxiliary head
-   predicting scale k+1 codes from accumulated latent <=k, small weight —
-   directly optimizes what Stage 1 needs; retrain one bertB-schedule model
-   (~6.5h), rerun Exp 3 to confirm gains appear.
-2. Rethink the planner interface: predicting exact residual-code identities
-   (8192-way, near-uniform) may be the wrong target — e.g. predict the
-   accumulated/dequantized latent (continuous, then quantize), which sidesteps
-   per-code entropy.
-3. Non-residual pyramid variant (quantize accumulated, not residual) as a
-   contrast run.
+Two probe-design errors were identified (credit: user review) and fixed:
+(1) conditioning codes were embedded by a from-scratch id embedding instead
+of the frozen pretrained codebook; (2) target positions used content-free
+learnable queries instead of VAR's e_k = up-interpolated accumulated
+dequantized latent. After fixing both (probe now reproduces the tokenizer's
+dequant path exactly, unit-tested), ALL gains flip positive:
 
-If a freeze is needed immediately regardless: **bertB** (drop q1 — it costs
-ramp efficiency and adds no planner value), with the understanding that a
-Stage 1 planner would be predicting nearly-independent high-entropy codes.
+| target scale | bertB gain (bits/code) | hybrid gain | old broken probe (bertB) |
+|---|---|---|---|
+| q16 | +0.14 | +0.08 | -0.46 |
+| q32 | +0.13 | +0.09 | -0.31 |
+| q64 | +0.24 | +0.35 | -0.16 |
+| q128 | +0.33 | +0.54 | -0.05 |
+| q256 | **+0.73** | **+1.11** | +0.08 |
+
+Prompted (+prev-window text): bertB +0.41, hybrid +0.60 at q256, all
+transitions positive. Incremental conditioning is now strongly monotone
+(hybrid q256: 12.66 -> 11.67 bits as coarse scales stack). **q1 ablation
+retest: +0.07 bits** (was 0) — q1 has modest planner value after all.
+
+Interpretation: cross-scale information EXISTS but lives in codebook
+geometry + spatial alignment; it is only readable through the VAR interface
+(dequantized accumulated latents as initial tokens), not from raw code ids
+with free-floating queries. The residual-decorrelation story survives only
+in weakened form: coupling is real, monotone toward finer scales, and
+strongest for the hybrid schedule.
+
+## Final verdict (v2, supersedes the above)
+
+| criterion | verdict |
+|---|---|
+| 1. full recon >= 99.5% | marginal (99.43-99.44%) |
+| 2. coarse-to-fine prefix recon | pass |
+| 3. no redundant hierarchy | pass |
+| 4. coarse reduces finer-scale uncertainty | **PASS** (up to +0.73/+1.11 bits/code via VAR interface) |
+| 5. q1 semantic or planner value | pass (22.6x doc lift + 0.07 bits planner gain) |
+
+**The tokenizer does NOT need surgery. Freeze recommendation: bertHybrid**
+[1,8,16,32,64,128,256] — strongest cross-scale coupling (+1.11), q1 anchor,
+reconstruction parity with bertB. bertB remains a valid alternative if the
+q1 ramp toll (~1.5-2pp) matters more than the anchor.
+
+**Binding Stage 1 design directive** (empirically demonstrated): the planner
+input MUST follow VAR exactly — initial tokens for scale k+1 = up-interpolated
+accumulated dequantized latent of scales <= k, context via codebook vectors.
+Deviating from this interface destroys nearly all cross-scale signal.
+Residual entropy stays high (11.7/13 bits at q256 given all coarse scales):
+prompt conditioning carries most of the remaining information, as in VAR.

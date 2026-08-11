@@ -1,0 +1,145 @@
+{
+  "ckpt": "/tmp/cadence_local/runs/vqvae_wt103_bertB/ckpt_step50000.pt",
+  "step": 50000,
+  "scales": [
+    8,
+    16,
+    32,
+    64,
+    128,
+    256
+  ],
+  "n_train_windows": 50000,
+  "n_val_windows": 932,
+  "probe": {
+    "d_model": 256,
+    "n_layers": 4,
+    "steps": 2000,
+    "batch_size": 128,
+    "code_input": "codebook",
+    "factorization": "parallel per-position, conditionally independent given coarse scales (VAR)"
+  },
+  "transitions": [
+    {
+      "target_scale": 16,
+      "cond_scales": [
+        8
+      ],
+      "ce_cond_bits": 12.693803532464333,
+      "ce_control_bits": 12.830111814677439,
+      "ce_unigram_bits": 12.844746919913993,
+      "gain_bits_vs_control": 0.13630828221310595,
+      "gain_bits_vs_unigram": 0.1509433874496587,
+      "rel_ce_reduction_pct": 1.0624091526402093,
+      "ppl_cond": 6625.453683973628,
+      "ppl_control": 7281.9636037602295
+    },
+    {
+      "target_scale": 32,
+      "cond_scales": [
+        8,
+        16
+      ],
+      "ce_cond_bits": 12.478556010678,
+      "ce_control_bits": 12.60420234876491,
+      "ce_unigram_bits": 12.654175329197551,
+      "gain_bits_vs_control": 0.1256463380869102,
+      "gain_bits_vs_unigram": 0.17561931851955215,
+      "rel_ce_reduction_pct": 0.9968606866996412,
+      "ppl_cond": 5707.154922750206,
+      "ppl_control": 6226.485461713768
+    },
+    {
+      "target_scale": 64,
+      "cond_scales": [
+        8,
+        16,
+        32
+      ],
+      "ce_cond_bits": 12.707256360856368,
+      "ce_control_bits": 12.951020655185106,
+      "ce_unigram_bits": 13.027542281365804,
+      "gain_bits_vs_control": 0.2437642943287378,
+      "gain_bits_vs_unigram": 0.32028592050943633,
+      "rel_ce_reduction_pct": 1.882201417315659,
+      "ppl_cond": 6687.523593379516,
+      "ppl_control": 7918.55051689222
+    },
+    {
+      "target_scale": 128,
+      "cond_scales": [
+        8,
+        16,
+        32,
+        64
+      ],
+      "ce_cond_bits": 12.644828684002587,
+      "ce_control_bits": 12.974812448713758,
+      "ce_unigram_bits": 13.040934012308636,
+      "gain_bits_vs_control": 0.32998376471117213,
+      "gain_bits_vs_unigram": 0.39610532830604905,
+      "rel_ce_reduction_pct": 2.5432642361152946,
+      "ppl_cond": 6404.315576807895,
+      "ppl_control": 8050.219741493765
+    },
+    {
+      "target_scale": 256,
+      "cond_scales": [
+        8,
+        16,
+        32,
+        64,
+        128
+      ],
+      "ce_cond_bits": 12.09829489981592,
+      "ce_control_bits": 12.827094840394905,
+      "ce_unigram_bits": 12.903011817139781,
+      "gain_bits_vs_control": 0.7287999405789829,
+      "gain_bits_vs_unigram": 0.8047169173238604,
+      "rel_ce_reduction_pct": 5.681722554072466,
+      "ppl_cond": 4384.79870937055,
+      "ppl_control": 7266.751420370183
+    }
+  ],
+  "incremental_finest": [
+    {
+      "cond_scales": [
+        128
+      ],
+      "target_scale": 256,
+      "ce_cond_bits": 12.740656649415458,
+      "ppl_cond": 6844.1546762337975
+    },
+    {
+      "cond_scales": [
+        64,
+        128
+      ],
+      "target_scale": 256,
+      "ce_cond_bits": 12.679051135255063,
+      "ppl_cond": 6558.049769984255
+    },
+    {
+      "cond_scales": [
+        32,
+        64,
+        128
+      ],
+      "target_scale": 256,
+      "ce_cond_bits": 12.34189687795215,
+      "ppl_cond": 5191.360205017658
+    },
+    {
+      "cond_scales": [
+        8,
+        16,
+        32,
+        64,
+        128
+      ],
+      "target_scale": 256,
+      "ce_cond_bits": 12.09829489981592,
+      "ppl_cond": 4384.79870937055
+    }
+  ]
+}

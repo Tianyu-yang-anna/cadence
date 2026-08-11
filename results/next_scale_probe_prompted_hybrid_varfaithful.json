@@ -1,0 +1,112 @@
+{
+  "ckpt": "/tmp/cadence_local/runs/vqvae_wt103_hybrid/ckpt_step50000.pt",
+  "step": 50000,
+  "scales": [
+    1,
+    8,
+    16,
+    32,
+    64,
+    128,
+    256
+  ],
+  "prompt": "previous 256-token window raw text",
+  "n_train_pairs": 49999,
+  "n_val_pairs": 931,
+  "probe": {
+    "d_model": 256,
+    "n_layers": 4,
+    "steps": 2000,
+    "batch_size": 64,
+    "code_input": "codebook"
+  },
+  "transitions": [
+    {
+      "target_scale": 8,
+      "cond_scales": [
+        1
+      ],
+      "ce_text_only_bits": 12.42860606097728,
+      "ce_text_coarse_bits": 12.244902231251627,
+      "gain_bits": 0.18370382972565302,
+      "rel_ce_reduction_pct": 1.4780726722237756,
+      "ppl_text_only": 5512.9395275012475,
+      "ppl_text_coarse": 4853.811044921894
+    },
+    {
+      "target_scale": 16,
+      "cond_scales": [
+        1,
+        8
+      ],
+      "ce_text_only_bits": 12.92672421192931,
+      "ce_text_coarse_bits": 12.693546694975412,
+      "gain_bits": 0.23317751695389805,
+      "rel_ce_reduction_pct": 1.803840734365728,
+      "ppl_text_only": 7786.310770411192,
+      "ppl_text_coarse": 6624.274284739925
+    },
+    {
+      "target_scale": 32,
+      "cond_scales": [
+        1,
+        8,
+        16
+      ],
+      "ce_text_only_bits": 12.718368307009326,
+      "ce_text_coarse_bits": 12.5831231661331,
+      "gain_bits": 0.1352451408762269,
+      "rel_ce_reduction_pct": 1.0633843714188622,
+      "ppl_text_only": 6739.2312081407545,
+      "ppl_text_coarse": 6136.171823884038
+    },
+    {
+      "target_scale": 64,
+      "cond_scales": [
+        1,
+        8,
+        16,
+        32
+      ],
+      "ce_text_only_bits": 12.931545584277876,
+      "ce_text_coarse_bits": 12.684453845500236,
+      "gain_bits": 0.24709173877763985,
+      "rel_ce_reduction_pct": 1.9107672564527247,
+      "ppl_text_only": 7812.375532084978,
+      "ppl_text_coarse": 6582.654878705016
+    },
+    {
+      "target_scale": 128,
+      "cond_scales": [
+        1,
+        8,
+        16,
+        32,
+        64
+      ],
+      "ce_text_only_bits": 12.947161653311168,
+      "ce_text_coarse_bits": 12.57585961206348,
+      "gain_bits": 0.37130204124768773,
+      "rel_ce_reduction_pct": 2.8678257921706662,
+      "ppl_text_only": 7897.397835206761,
+      "ppl_text_coarse": 6105.355606305285
+    },
+    {
+      "target_scale": 256,
+      "cond_scales": [
+        1,
+        8,
+        16,
+        32,
+        64,
+        128
+      ],
+      "ce_text_only_bits": 12.779949572858314,
+      "ce_text_coarse_bits": 12.179728203121712,
+      "gain_bits": 0.6002213697366008,
+      "rel_ce_reduction_pct": 4.69658637003806,
+      "ppl_text_only": 7033.122219248901,
+      "ppl_text_coarse": 4639.418267516159
+    }
+  ]
+}

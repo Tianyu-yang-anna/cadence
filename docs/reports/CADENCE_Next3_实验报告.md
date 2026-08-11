@@ -124,3 +124,26 @@ bertHybrid = [1,8,16,32,64,128,256]（505 码/窗）。
 - `eval_scale_subsets.py`：LOSO/单尺度/邻居组合一键评估（raw+readout 双模式）
 - `probe_next_scale.py` / `probe_next_scale_prompted.py`：严格 VAR 分解的 next-scale 探针（条件组/同架构空条件控制组/unigram 基线/增量条件/q1 消融；prompt 版加前窗原文条件）
 - 全部经对抗审查（0 confirmed 缺陷）；单测 50+ 全绿
+
+---
+
+## 勘误与最终结论修订（2026-08-11）
+
+**本报告 §4 的负面结论已被推翻**——探针存在两处设计错误（由用户审查发现）：
+1. 条件码用从零训练的 id embedding 表示，而非冻结的 pretrained codebook 向量；
+2. 目标位置用无内容的可学习 query，而非 VAR 的 e_k（前序尺度累计反量化 latent 的 up-interpolation）。
+
+两处修正后（探针内部重建与 tokenizer 反量化路径逐位一致，有单测锁定），**所有 transition 的增益由 ≈0/负值全面转正**：
+
+| 目标尺度 | bertB（修正后） | bertHybrid（修正后） | 旧探针（bertB） |
+|---|---|---|---|
+| q16 | +0.14 | +0.08 | −0.46 |
+| q64 | +0.24 | +0.35 | −0.16 |
+| q128 | +0.33 | +0.54 | −0.05 |
+| q256 | **+0.73** | **+1.11** | +0.08 |
+
+prompt 版同步转正（q256：bertB +0.41 / hybrid +0.60）；增量条件强单调（hybrid q256：12.66→11.67 bits）；**q1 消融复验 = +0.07 bits**（原判"零价值"翻案）。
+
+**修订后的冻结判定：五条标准 边缘/✅/✅/✅/✅ → 冻结 bertHybrid**（跨尺度耦合最强 + q1 主题锚 + 重建与 bertB 持平）。tokenizer 不需要手术；Stage 1 的硬性设计约束 = planner 输入接口必须严格按 VAR 构造（偏离即丢失几乎全部跨尺度信号，本轮已实测）。残余熵仍高（q256 条件后 11.7/13 bits），prompt 条件承担其余信息——与 VAR 在图像上的情形同性质。
+
+方法论教训：**负面结论对探针接口极其敏感**。跨尺度信息藏在码本几何与空间对齐里，raw id + 自由 query 的探针在同一批 checkpoint 上测出 ≈0——两版探针结果均已归档（`results/next_scale_probe_*_varfaithful.json` 与 `results/legacy_*_brokenprobe.json`）作为对照。

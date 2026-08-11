@@ -1,0 +1,178 @@
+{
+  "ckpt": "/tmp/cadence_local/runs/vqvae_wt103_hybrid/ckpt_step50000.pt",
+  "step": 50000,
+  "scales": [
+    1,
+    8,
+    16,
+    32,
+    64,
+    128,
+    256
+  ],
+  "n_train_windows": 50000,
+  "n_val_windows": 932,
+  "probe": {
+    "d_model": 256,
+    "n_layers": 4,
+    "steps": 2000,
+    "batch_size": 128,
+    "code_input": "codebook",
+    "factorization": "parallel per-position, conditionally independent given coarse scales (VAR)"
+  },
+  "transitions": [
+    {
+      "target_scale": 8,
+      "cond_scales": [
+        1
+      ],
+      "ce_cond_bits": 12.29940636297381,
+      "ce_control_bits": 12.325059832530025,
+      "ce_unigram_bits": 12.328763506663455,
+      "gain_bits_vs_control": 0.02565346955621411,
+      "gain_bits_vs_unigram": 0.029357143689643542,
+      "rel_ce_reduction_pct": 0.20814073038822806,
+      "ppl_cond": 5040.692956867758,
+      "ppl_control": 5131.12633810898
+    },
+    {
+      "target_scale": 16,
+      "cond_scales": [
+        1,
+        8
+      ],
+      "ce_cond_bits": 12.646661071310897,
+      "ce_control_bits": 12.727626287178728,
+      "ce_unigram_bits": 12.735266127604087,
+      "gain_bits_vs_control": 0.0809652158678314,
+      "gain_bits_vs_unigram": 0.08860505629318934,
+      "rel_ce_reduction_pct": 0.636137595817001,
+      "ppl_cond": 6412.454956176149,
+      "ppl_control": 6782.616874642526
+    },
+    {
+      "target_scale": 32,
+      "cond_scales": [
+        1,
+        8,
+        16
+      ],
+      "ce_cond_bits": 12.535094670887151,
+      "ce_control_bits": 12.628797172839693,
+      "ce_unigram_bits": 12.688530101394324,
+      "gain_bits_vs_control": 0.0937025019525425,
+      "gain_bits_vs_unigram": 0.15343543050717381,
+      "rel_ce_reduction_pct": 0.7419748743297988,
+      "ppl_cond": 5935.256528907069,
+      "ppl_control": 6333.543506820157
+    },
+    {
+      "target_scale": 64,
+      "cond_scales": [
+        1,
+        8,
+        16,
+        32
+      ],
+      "ce_cond_bits": 12.57421561319503,
+      "ce_control_bits": 12.923623278596652,
+      "ce_unigram_bits": 12.998859726043044,
+      "gain_bits_vs_control": 0.34940766540162216,
+      "gain_bits_vs_unigram": 0.4246441128480135,
+      "rel_ce_reduction_pct": 2.703635488820621,
+      "ppl_cond": 6098.402313519435,
+      "ppl_control": 7769.5928223930405
+    },
+    {
+      "target_scale": 128,
+      "cond_scales": [
+        1,
+        8,
+        16,
+        32,
+        64
+      ],
+      "ce_cond_bits": 12.397509778433518,
+      "ce_control_bits": 12.941719455507489,
+      "ce_unigram_bits": 13.028258876642203,
+      "gain_bits_vs_control": 0.5442096770739697,
+      "gain_bits_vs_unigram": 0.6307490982086847,
+      "rel_ce_reduction_pct": 4.2050801591312155,
+      "ppl_cond": 5395.383442713613,
+      "ppl_control": 7867.663041813458
+    },
+    {
+      "target_scale": 256,
+      "cond_scales": [
+        1,
+        8,
+        16,
+        32,
+        64,
+        128
+      ],
+      "ce_cond_bits": 11.673198475799857,
+      "ce_control_bits": 12.7817927028479,
+      "ce_unigram_bits": 12.8674137076284,
+      "gain_bits_vs_control": 1.1085942270480424,
+      "gain_bits_vs_unigram": 1.1942152318285417,
+      "rel_ce_reduction_pct": 8.673229591659998,
+      "ppl_cond": 3265.749631788828,
+      "ppl_control": 7042.113199409929
+    }
+  ],
+  "incremental_finest": [
+    {
+      "cond_scales": [
+        128
+      ],
+      "target_scale": 256,
+      "ce_cond_bits": 12.659586419317138,
+      "ppl_cond": 6470.163344391663
+    },
+    {
+      "cond_scales": [
+        64,
+        128
+      ],
+      "target_scale": 256,
+      "ce_cond_bits": 12.564772930107466,
+      "ppl_cond": 6058.6175797126425
+    },
+    {
+      "cond_scales": [
+        32,
+        64,
+        128
+      ],
+      "target_scale": 256,
+      "ce_cond_bits": 12.10864695039646,
+      "ppl_cond": 4416.374961282805
+    },
+    {
+      "cond_scales": [
+        1,
+        8,
+        16,
+        32,
+        64,
+        128
+      ],
+      "target_scale": 256,
+      "ce_cond_bits": 11.673198475799857,
+      "ppl_cond": 3265.749631788828
+    },
+    {
+      "cond_scales": [
+        8,
+        16,
+        32,
+        64,
+        128
+      ],
+      "target_scale": 256,
+      "ce_cond_bits": 11.741833518780616,
+      "ppl_cond": 3424.870014985364
+    }
+  ]
+}

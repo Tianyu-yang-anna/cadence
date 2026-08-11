@@ -19,7 +19,7 @@ tokens (256) ◄── decoder (8L bidir Transformer, one parallel pass) ◄─�
 - **Hierarchy must be trained for**: without scale dropout, coarse scales learn nothing; with `scale_dropout=0.5`, prefix-only decoding reaches 52% acc @ 120 codes and 84% @ 248 codes.
 - **Dense geometric schedules win**: `[8,16,32,64,128,256]` dominates all tested schedules at every matched code budget; ultra-coarse scales (1/2/4) are inefficient.
 - **No redundant scales**: leave-one-scale-out costs 0.8–18.2 pp, monotone in scale size.
-- **Negative result — coarse codes do not predict finer codes** (gain ≈ 0 bits, with or without a text prompt): residual quantization decorrelates scales by construction. The next-scale-prediction premise does not hold in raw code space; see [Roadmap](#roadmap).
+- **Coarse codes DO predict finer codes — but only through the VAR interface**: with initial tokens built as VAR's e_k (up-interpolated accumulated dequantized latents from the frozen codebook), gains reach +0.73 (bertB) / **+1.11** (hybrid) bits/code at the finest scale and grow monotonically. An earlier ≈0 result was a probe artifact (from-scratch id embeddings + content-free learnable queries); deviating from the VAR interface destroys nearly all cross-scale signal — now a binding Stage 1 design constraint.
 
 Detailed write-ups: [`docs/reports/`](docs/reports/) (Chinese) · [`docs/RESULTS_LOG.md`](docs/RESULTS_LOG.md) (English log) · per-experiment guides in [`experiments/`](experiments/).
 
@@ -111,14 +111,17 @@ Requires `scale_dropout > 0`: without it (run `base`), coarse prefixes decode at
 
 Every scale carries unique information; neighboring scales are complementary, not redundant.
 
-**Next-scale predictability** (predict all codes of scale *k+1* in parallel given *all* coarser scales, vs a capacity-matched no-conditioning control; bits/code):
+**Next-scale predictability** (predict all codes of scale *k+1* in parallel given *all* coarser scales, vs a capacity-matched no-conditioning control; bits/code). The probe follows VAR exactly: conditioning codes are represented by the **frozen pretrained codebook**, and target-position inputs are **e_k = up-interpolated accumulated dequantized latents** (unit-tested identical to the tokenizer's dequant path):
 
 | target | q16 | q32 | q64 | q128 | q256 |
 |---|---:|---:|---:|---:|---:|
-| gain (codes only) | −0.46 | −0.31 | −0.16 | −0.05 | +0.08 |
-| gain (+ previous-window text prompt) | −0.09 | +0.08 | +0.02 | +0.03 | +0.06 |
+| bertB gain | +0.14 | +0.13 | +0.24 | +0.33 | **+0.73** |
+| bertHybrid gain | +0.08 | +0.09 | +0.35 | +0.54 | **+1.11** |
+| bertB gain (+ text prompt) | +0.18 | +0.07 | +0.11 | +0.17 | +0.41 |
 
-Gains are ~0 everywhere (all within sampling noise). Residual quantization makes scale *k+1* encode exactly what scales ≤ *k* failed to explain, so codes across scales are near-independent — good for compression (explains the redundancy result), fatal for a planner that relies on coarse-to-fine conditioning. The topic-anchor scale `q1` (adjacent-window consistency lift up to 104×) also adds zero predictive value. Caveat: probes are 4L/256d and consume code *ids*; a variant conditioning on dequantized latents is planned.
+Gains are positive everywhere and grow toward finer scales; stacking coarse scales helps monotonically (hybrid q256: 12.66 → 11.67 bits). The q1 anchor contributes +0.07 bits of planner-prediction value on top of its 22.6× document-consistency lift.
+
+**Probe-interface lesson (important negative control)**: an earlier version of this probe — from-scratch id embeddings and content-free learnable query slots instead of VAR's e_k — measured gain ≈ 0 on the *same* checkpoints (archived as `results/legacy_*_brokenprobe.json`). Cross-scale information lives in codebook geometry + spatial alignment and is invisible to an interface that discards them. Corollary for Stage 1: the planner input must follow VAR's construction exactly. Residual entropy remains high (~11.7/13 bits at q256 given all coarse scales) — prompt conditioning carries the rest, as in VAR image generation.
 
 ## Repository structure
 
@@ -152,8 +155,9 @@ Version tags mark the code state of each experiment round: `v0.1-pilot`, `v0.2-b
 
 ## Roadmap
 
-Stage 0 conclusion: compression solved, next-scale predictability structurally broken → tokenizer **not frozen**. Stage 0.5 options, in order:
+Stage 0 conclusion (final): compression solved, hierarchy non-redundant, and cross-scale predictability **confirmed through the VAR interface** → **freeze recommendation: bertHybrid** [1,8,16,32,64,128,256] (strongest coupling +1.11 bits, q1 topic anchor, reconstruction parity; bertB is the alternative if the ~1.5-2pp ramp toll of q1 matters more).
 
-1. Probe with **dequantized accumulated latents** as conditioning (matches the actual VAR planner interface; rules out "information present but unreadable from ids").
-2. Add a **cross-scale coupling auxiliary loss** to tokenizer training (predict scale k+1 codes from the accumulated latent ≤ k), retrain, re-run probes.
-3. Switch the planner target to **continuous accumulated latents** (quantize after prediction), sidestepping near-uniform 8192-way code identities.
+Next: Stage 1 — VAR-style planner over the frozen tokenizer. Binding design constraints from Stage 0:
+1. Planner input = VAR's e_k exactly (up-interpolated accumulated dequantized latents + codebook-vector context); any other interface loses the cross-scale signal (measured).
+2. Strong prompt conditioning is essential: coarse codes contribute up to ~1.1 bits/code, the remaining ~11.7 bits at the finest scale must come from the prompt and within-scale structure.
+3. Optional strengthener: a cross-scale coupling auxiliary loss during tokenizer training could raise the ~1 bit coupling further (no longer required, now an optimization).
