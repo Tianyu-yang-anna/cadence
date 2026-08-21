@@ -4,12 +4,12 @@
 #      TOKENIZER_RUN, CODES_NAME, N (default 1000), CFGS (default "1.0 3.0"),
 #      TOPP (default 0.95), TEMP (default 1.0).
 PLANNER_RUN="${PLANNER_RUN:-base}"
-AR_RUN="${AR_RUN:-base}"
+AR_RUN="${AR_RUN-base}"
 TOKENIZER_RUN="${TOKENIZER_RUN:-hybrid}"
 CODES_NAME="${CODES_NAME:-codes_hybrid}"
 N="${N:-1000}"
 VAL_N="${VAL_N:-200}"           # smaller sample for the val CFG sweep
-CFGS="${CFGS:-1.0 3.0 5.0}"     # swept on VAL; test uses TEST_CFG only
+CFGS="${CFGS-1.0 3.0 5.0}"     # swept on VAL; test uses TEST_CFG only
 TEST_CFG="${TEST_CFG:-3.0}"     # pre-registered final config for the test split
 TOPP="${TOPP:-0.95}"
 TEMP="${TEMP:-1.0}"
