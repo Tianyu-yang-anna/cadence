@@ -13,9 +13,12 @@ CFGS="${CFGS:-1.0 3.0 5.0}"     # swept on VAL; test uses TEST_CFG only
 TEST_CFG="${TEST_CFG:-3.0}"     # pre-registered final config for the test split
 TOPP="${TOPP:-0.95}"
 TEMP="${TEMP:-1.0}"
+SKIP_ORACLE="${SKIP_ORACLE:-0}"   # 1 = val-sweep-only runs skip the oracle row
+SKIP_TEST="${SKIP_TEST:-0}"       # 1 = don't touch the test split (protects pre-registration)
+TAG="${TAG:-}"                    # suffix for output filenames + job tag (e.g. _t08)
 export DATA_NAME="${DATA_NAME:-wikitext103_bert}"
 export TOKENIZER="${TOKENIZER:-bert-base-uncased}"
-export JOB_TAG="geneval-$PLANNER_RUN"
+export JOB_TAG="geneval-$PLANNER_RUN$TAG"
 source "$(dirname "${BASH_SOURCE[0]}")/bootstrap.sh"
 
 start_heartbeat
@@ -59,33 +62,37 @@ run_step() {  # $1 label, rest = command
     return 1
   fi
 }
-run_step "oracle (tokenizer ceiling, test)" \
-  bash -c "cd '$CODE' && '$PY' generate.py --backend oracle --config configs/planner_wt103.yaml \
-    --set 'run_name=planner_wt103_$PLANNER_RUN' --split test --n '$N' \
-    --out '$OUT/gens_oracle.jsonl'" \
-  && run_step "eval oracle" "$PY" "$CODE/eval_generation.py" --gen "$OUT/gens_oracle.jsonl"
-push_log
+if [ "$SKIP_ORACLE" != "1" ]; then
+  run_step "oracle (tokenizer ceiling, test)" \
+    bash -c "cd '$CODE' && '$PY' generate.py --backend oracle --config configs/planner_wt103.yaml \
+      --set 'run_name=planner_wt103_$PLANNER_RUN' --split test --n '$N' \
+      --out '$OUT/gens_oracle.jsonl'" \
+    && run_step "eval oracle" "$PY" "$CODE/eval_generation.py" --gen "$OUT/gens_oracle.jsonl"
+  push_log
+fi
 
 # CFG sweep on VAL (model selection), single pre-registered config on TEST
 for w in $CFGS; do
-  run_step "planner val sweep cfg=$w" bash -c \
+  run_step "planner val sweep cfg=$w$TAG" bash -c \
     "cd '$CODE' && '$PY' generate.py --backend planner --config configs/planner_wt103.yaml \
       --set 'run_name=planner_wt103_$PLANNER_RUN' --split val --n '$VAL_N' \
       --temperature '$TEMP' --top_p '$TOPP' --cfg '$w' \
-      --out '$OUT/gens_planner_val_cfg${w}.jsonl'" \
-    && run_step "eval val cfg=$w" "$PY" "$CODE/eval_generation.py" \
-        --gen "$OUT/gens_planner_val_cfg${w}.jsonl" --skip_bertscore
+      --out '$OUT/gens_planner_val_cfg${w}${TAG}.jsonl'" \
+    && run_step "eval val cfg=$w$TAG" "$PY" "$CODE/eval_generation.py" \
+        --gen "$OUT/gens_planner_val_cfg${w}${TAG}.jsonl" --skip_bertscore
   push_log
 done
 
-run_step "planner TEST cfg=$TEST_CFG" bash -c \
-  "cd '$CODE' && '$PY' generate.py --backend planner --config configs/planner_wt103.yaml \
-    --set 'run_name=planner_wt103_$PLANNER_RUN' --split test --n '$N' \
-    --temperature '$TEMP' --top_p '$TOPP' --cfg '$TEST_CFG' \
-    --out '$OUT/gens_planner_test.jsonl'" \
-  && run_step "eval planner test" "$PY" "$CODE/eval_generation.py" \
-      --gen "$OUT/gens_planner_test.jsonl"
-push_log
+if [ "$SKIP_TEST" != "1" ]; then
+  run_step "planner TEST cfg=$TEST_CFG" bash -c \
+    "cd '$CODE' && '$PY' generate.py --backend planner --config configs/planner_wt103.yaml \
+      --set 'run_name=planner_wt103_$PLANNER_RUN' --split test --n '$N' \
+      --temperature '$TEMP' --top_p '$TOPP' --cfg '$TEST_CFG' \
+      --out '$OUT/gens_planner_test${TAG}.jsonl'" \
+    && run_step "eval planner test" "$PY" "$CODE/eval_generation.py" \
+        --gen "$OUT/gens_planner_test${TAG}.jsonl"
+  push_log
+fi
 
 if [ -n "$AR_RUN" ]; then
   run_step "AR baseline (test)" bash -c \
