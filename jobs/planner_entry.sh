@@ -21,7 +21,8 @@ mkdir -p "$CODES_DIR"
 cp -f "$VOL/data/$CODES_NAME/"codes_*.npy "$VOL/data/$CODES_NAME/codes_meta.json" "$CODES_DIR/" || exit 1
 
 # restore frozen tokenizer ckpt
-TOK_FULL="vqvae_wt103_$TOKENIZER_RUN"
+# TOK_FULL_NAME overrides the wt103 prefix (Track 2)
+TOK_FULL="${TOK_FULL_NAME:-vqvae_wt103_$TOKENIZER_RUN}"
 TOK_DIR="$LOCAL_ROOT/runs/$TOK_FULL"
 TVCK="$VOL/checkpoints/$TOK_FULL"
 mkdir -p "$TOK_DIR"
@@ -34,7 +35,7 @@ fi
 cp -f "$TVCK/$latest" "$TOK_DIR/$latest"
 printf '%s\n' "$latest" > "$TOK_DIR/latest.txt"
 
-FULL_RUN_NAME="planner_wt103_$RUN_NAME"
+FULL_RUN_NAME="${FULL_NAME:-planner_wt103_$RUN_NAME}"
 RUN_DIR="$LOCAL_ROOT/runs/$FULL_RUN_NAME"
 VCK="$VOL/checkpoints/$FULL_RUN_NAME"
 mkdir -p "$RUN_DIR" "$VCK"
