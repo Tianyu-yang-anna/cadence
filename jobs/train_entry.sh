@@ -21,7 +21,8 @@ if [ "${SKIP_ENSURE:-0}" != "1" ]; then
   ensure_data || { log "ABORT: data"; exit 1; }
 fi
 
-FULL_RUN_NAME="vqvae_wt103_$RUN_NAME"
+# FULL_NAME overrides the default wt103-prefixed run name (Track 2 runs)
+FULL_RUN_NAME="${FULL_NAME:-vqvae_wt103_$RUN_NAME}"
 RUN_DIR="$LOCAL_ROOT/runs/$FULL_RUN_NAME"
 VCK="$VOL/checkpoints/$FULL_RUN_NAME"
 mkdir -p "$RUN_DIR" "$VCK"
