@@ -99,8 +99,8 @@ if [ -n "$AR_RUN" ]; then
     "cd '$CODE' && '$PY' generate.py --backend ar --config configs/ar_baseline_wt103.yaml \
       --set 'run_name=ar_wt103_$AR_RUN' --split test --n '$N' \
       --temperature '$TEMP' --top_p '$TOPP' \
-      --out '$OUT/gens_ar.jsonl'" \
-    && run_step "eval AR" "$PY" "$CODE/eval_generation.py" --gen "$OUT/gens_ar.jsonl"
+      --out '$OUT/gens_ar${TAG}.jsonl'" \
+    && run_step "eval AR" "$PY" "$CODE/eval_generation.py" --gen "$OUT/gens_ar${TAG}.jsonl"
   push_log
 fi
 
