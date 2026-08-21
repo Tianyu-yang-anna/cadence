@@ -1,0 +1,11 @@
+{
+  "gen_file": "/tmp/cadence_local/geneval/gens_planner_val_cfg3.0_t08.jsonl",
+  "n": 200,
+  "rouge1": 0.30071912420573094,
+  "rouge2": 0.04234678314916291,
+  "rougeL": 0.14970609660540646,
+  "distinct1": 0.23603603603603604,
+  "distinct2": 0.7675330703179392,
+  "ref_distinct2": 0.6631804025472969,
+  "mauve": 0.7999931349033021
+}

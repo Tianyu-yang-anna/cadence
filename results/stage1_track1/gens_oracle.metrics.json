@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/geneval/gens_oracle.jsonl",
+  "n": 1000,
+  "rouge1": 0.9929707778340013,
+  "rouge2": 0.9860734868154141,
+  "rougeL": 0.992945699650052,
+  "distinct1": 0.11651321609616132,
+  "distinct2": 0.5621869724088957,
+  "ref_distinct2": 0.5607742081107516,
+  "bertscore_f1": 0.9971215724945068,
+  "mauve": 0.9990456493030073
+}

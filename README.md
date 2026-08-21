@@ -1,6 +1,8 @@
-# CADENCE Stage 0: Multi-Scale Residual VQ-VAE for Text
+# CADENCE: VAR-Style Next-Scale Prediction for Text
 
-A text tokenizer that encodes a 256-token window into a **coarse-to-fine hierarchy of discrete codes** (e.g. 8 + 16 + 32 + 64 + 128 + 256 codes over a shared 8192-entry codebook), decoded back to text by a bidirectional transformer in a single parallel pass. This is Stage 0 of CADENCE, which adapts [VAR](https://arxiv.org/abs/2404.02905)-style next-scale prediction to language modeling.
+Adapting [VAR](https://arxiv.org/abs/2404.02905)-style visual autoregressive modeling to language:
+**Stage 0** trains a text tokenizer that encodes a 256-token window into a coarse-to-fine hierarchy of discrete codes (e.g. 8 + 16 + 32 + 64 + 128 + 256 codes over a shared 8192-entry codebook), decoded back to text by a bidirectional transformer in a single parallel pass.
+**Stage 1** trains a VAR planner that *generates* those codes scale-by-scale from a text prompt — 7 next-scale steps + 1 parallel decode instead of 256 sequential token steps.
 
 ```
 tokens (256) ──► encoder (6L bidir Transformer) ──► f ∈ R^{256×32}
@@ -80,7 +82,7 @@ python experiments/exp5_next_scale_probe/probe_next_scale_prompted.py --config .
 python experiments/analyze_runs.py --dir results/
 ```
 
-## Results
+## Stage 0 results
 
 All numbers on the WikiText-103 test set at 50k steps. Raw JSONs in [`results/`](results/).
 
@@ -123,28 +125,69 @@ Gains are positive everywhere and grow toward finer scales; stacking coarse scal
 
 **Probe-interface lesson (important negative control)**: an earlier version of this probe — from-scratch id embeddings and content-free learnable query slots instead of VAR's e_k — measured gain ≈ 0 on the *same* checkpoints (archived as `results/legacy_*_brokenprobe.json`). Cross-scale information lives in codebook geometry + spatial alignment and is invisible to an interface that discards them. Corollary for Stage 1: the planner input must follow VAR's construction exactly. Residual entropy remains high (~11.7/13 bits at q256 given all coarse scales) — prompt conditioning carries the rest, as in VAR image generation.
 
+## Stage 1: VAR planner (text generation)
+
+A single shared transformer generates the frozen tokenizer's code hierarchy scale-by-scale, conditioned on a text prompt. Architecture (constraints locked by Stage 0 measurements):
+
+- **Inputs are VAR's e_k exactly**: block *k*'s input tokens are up-interpolated accumulated dequantized latents from the frozen codebook (any other interface destroys the cross-scale signal — measured in Stage 0).
+- **Normalized-coordinate RoPE**: token *j* of scale *k* sits at (j+0.5)/l_k, so the same spatial position shares its position code across scales; block-causal mask (bidirectional within a scale, causal across scales).
+- **STAR-style conditioning**: frozen prompt encoder → pooled start token + per-block cross-attention, with classifier-free guidance (10% condition drop at train time).
+- Generation = 7 next-scale sampling steps + 1 parallel decoder pass (1000×256-token continuations in 23 s).
+
+### Track 1: pipeline validation (WikiText-103, frozen bertHybrid)
+
+Window continuation, test n=1000, sampling selected on val — full analysis in [`results/stage1_track1_summary.md`](results/stage1_track1_summary.md), raw metrics in [`results/stage1_track1/`](results/stage1_track1/):
+
+| system | ROUGE-1 | ROUGE-2 | ROUGE-L | BERTScore | MAUVE |
+|---|---|---|---|---|---|
+| oracle (GT codes → decoder) | 0.993 | 0.986 | 0.993 | 0.997 | 0.999 |
+| AR baseline 108M (early-stopped) | 0.331 | 0.053 | 0.163 | 0.822 | **0.956** |
+| VAR planner 121M (val-selected: T=0.8, p=0.9, CFG=3) | 0.304 | 0.040 | 0.148 | 0.804 | 0.416 |
+
+Takeaways: (1) pipeline validated end-to-end, lexical metrics within ~0.03 of matched AR; (2) the MAUVE gap is **rendering, not planning** — the finest scale (256 residual codes) is sampled in one parallel step, giving locally-noisy but on-topic text, while AR is locally fluent but drifts; (3) planner next-scale CE at q256 = 6.75 bits/code vs the 12.18 Stage-0 probe bound — the full architecture extracts 5.4 bits/code more than a linear probe; (4) planner barely overfits where AR degrades 30% (multi-scale factorization + frozen components regularize); (5) fairness caveat: the planner's prompt encoder is pretrained BERT, the AR baseline is fully from-scratch.
+
+### Track 2: TextLDM-protocol benchmark (in progress)
+
+GPT-2 BPE hybrid tokenizer retrained on a 4B-token OpenWebText slice (**99.39%** test reconstruction, first multi-GPU VQ-EMA run); 336M planner (20L×1024) training; evaluation on the four TextLDM benchmarks (TinyStories / 1BW / Wikipedia / WikiSource, 1000 continuations each, 40–60% prefix split) via `generate.py --benchmark`.
+
+```bash
+# Stage 1 training + evaluation (Track 1)
+python train_planner.py --config configs/planner_wt103.yaml           # 8xH100 DDP via torchrun
+python train_ar_baseline.py --config configs/ar_baseline_wt103.yaml
+python generate.py --backend planner --config configs/planner_wt103.yaml \
+    --split test --n 1000 --temperature 0.8 --top_p 0.9 --cfg 3.0 --out gens.jsonl
+python eval_generation.py --gen gens.jsonl                            # ROUGE / BERTScore / MAUVE
+# Track 2 benchmark protocol (free-text prompts, chained windows)
+python generate.py --backend planner --config configs/planner_owt.yaml \
+    --benchmark benchmarks/wikipedia.jsonl --out gens_wiki.jsonl
+```
+
 ## Repository structure
 
 ```
-models/                     shared model code (encoder/decoder, VQ-EMA, multi-scale residual VQ)
-train_vqvae.py              training loop (bf16, quantization-bypass warmup, scale dropout, resume)
+models/                     encoder/decoder, VQ-EMA, multi-scale residual VQ,
+                            VAR planner, frozen prompt encoder, AR baseline
+train_vqvae.py              Stage 0 tokenizer training (bf16, bypass warmup, scale dropout, resume)
+train_planner.py            Stage 1 planner training (teacher-forced CE, per-scale logging, DDP)
+train_ar_baseline.py        matched AR baseline (loss on continuation half only)
+generate.py                 continuation generation: planner / ar / oracle backends,
+                            --chain for long sequences, --benchmark for free-text protocol
+eval_generation.py          ROUGE-1/2/L, BERTScore, MAUVE, distinct-n
 eval_vqvae.py               reconstruction / truncation / codebook-health evaluation
-data/                       WikiText-103 preparation + memmap loaders
-configs/                    GPT-2, BERT and CPU-debug configs; ablations via --set
-experiments/
-  exp1_dropout_pilot/       does hierarchy emerge without pressure? (config-only)
-  exp2_schedule_sweep/      scale-schedule search (config-only)
-  exp3_single_factors/      phi convs / separate codebooks / dropout strength (config-only)
-  exp4_scale_redundancy/    leave-one-scale-out + subset-readout decoder (code)
-  exp5_next_scale_probe/    strict next-scale predictability probes (code)
-  analyze_runs.py           cross-run comparison tables
-jobs/                       Databricks serverless GPU submission scripts
-results/                    all result JSONs + freeze-decision summary
+data/                       WikiText-103 + OpenWebText prep, memmap loaders, code dumps,
+                            TextLDM benchmark preparation
+configs/                    Stage 0 ablations; planner_wt103 / ar_baseline_wt103 (Track 1);
+                            tokenizer_owt_gpt2 / planner_owt (Track 2)
+experiments/                Stage 0 experiment suites (dropout, schedules, factors,
+                            redundancy, next-scale probes) + analyze_runs.py
+jobs/                       Databricks serverless GPU submission scripts (all stages)
+results/                    all result JSONs + summaries (stage1_track1_summary.md)
 docs/                       experiment specs, full reports (zh), detailed results log (en)
-tests/                      unit tests incl. decomposition invariants and leakage checks
+tests/                      61 unit tests: decomposition invariants, mask leakage,
+                            e_k construction, CFG, generation determinism, benchmark mode
 ```
 
-Version tags mark the code state of each experiment round: `v0.1-pilot`, `v0.2-bert-line`, `v0.3-next3`.
+Version tags mark the code state of each experiment round: `v0.1-pilot`, `v0.2-bert-line`, `v0.3-next3`, `v0.4-probe-correction`; Stage 1 lives on `main` after v0.4.
 
 ## Gotchas
 
@@ -152,12 +195,16 @@ Version tags mark the code state of each experiment round: `v0.1-pilot`, `v0.2-b
 - Dead-code revival must use raw usage counts per window, not an absolute threshold on the EMA `cluster_size` (whose total mass equals mean assignments/call — an absolute threshold resets ~88% of an 8192 codebook every sweep; fixed in `models/vq_ema.py`).
 - Evaluating non-prefix code subsets requires the subset-readout decoder; the original decoder is only in-distribution on prefixes.
 - WikiText-103 contains ~970 in-body lines that look like headings (` = Position ; GP = `); document splitting requires blank-line context (fixed).
+- CFG null parameters must enter the computation graph **unconditionally** under DDP (`find_unused_parameters=False`); gating them on `cond_drop.any()` crashes the reducer whenever a batch samples zero drops (~3.4%/rank/step at p=0.1, B=32).
+- `${VAR:-default}` in job scripts replaces *explicitly empty* env vars with the default; use `${VAR-default}` where empty is a meaningful "skip" value.
+- Streaming-dataset background threads can crash the interpreter at exit (rc=134 after all work is done) — `os._exit(0)` in prep scripts.
 
 ## Roadmap
 
-Stage 0 conclusion (final): compression solved, hierarchy non-redundant, and cross-scale predictability **confirmed through the VAR interface** → **freeze recommendation: bertHybrid** [1,8,16,32,64,128,256] (strongest coupling +1.11 bits, q1 topic anchor, reconstruction parity; bertB is the alternative if the ~1.5-2pp ramp toll of q1 matters more).
+**Stage 0 (final)**: compression solved, hierarchy non-redundant, cross-scale predictability confirmed through the VAR interface → tokenizer frozen as **bertHybrid** [1,8,16,32,64,128,256].
 
-Next: Stage 1 — VAR-style planner over the frozen tokenizer. Binding design constraints from Stage 0:
-1. Planner input = VAR's e_k exactly (up-interpolated accumulated dequantized latents + codebook-vector context); any other interface loses the cross-scale signal (measured).
-2. Strong prompt conditioning is essential: coarse codes contribute up to ~1.1 bits/code, the remaining ~11.7 bits at the finest scale must come from the prompt and within-scale structure.
-3. Optional strengthener: a cross-scale coupling auxiliary loss during tokenizer training could raise the ~1 bit coupling further (no longer required, now an optimization).
+**Stage 1 Track 1 (done)**: pipeline validated end-to-end; lexical metrics near the matched AR baseline, MAUVE gap attributed to one-step parallel sampling of the finest scale (see [`results/stage1_track1_summary.md`](results/stage1_track1_summary.md)).
+
+**Stage 1 Track 2 (in flight)**: OWT/GPT-2 tokenizer done (99.39% reconstruction), 336M planner training, TextLDM 4-benchmark evaluation next.
+
+**Open questions ranked next**: (1) scaling response of the MAUVE gap (Track 2); (2) rendering/planning isolation — sample only the finest scale given oracle coarse codes; (3) fine-scale rendering fixes (per-scale temperature schedule, local AR or iterative refinement over q256); (4) long-form chained generation vs AR on global-coherence metrics — the setting the planning hypothesis actually targets.

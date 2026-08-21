@@ -172,3 +172,46 @@ Full write-up: `results/hybrid_schedule_summary.md` (+ per-run JSONs in
    (b) rethink planner target (continuous accumulated latent instead of
    near-uniform residual code identities); (c) non-residual pyramid contrast.
    If forced to freeze now: bertB.
+
+## Results round 4: probe correction — conclusions reversed (2026-08-11)
+
+The round-3 "gains ≈ 0, do not freeze" verdict was a **probe artifact**, caught
+by two interface errors (user-identified): (1) conditioning codes were embedded
+by a from-scratch id-embedding layer instead of the frozen pretrained codebook;
+(2) target-position queries were content-free learnable slots instead of VAR's
+e_k (up-interpolated accumulated dequantized latents). Rerunning the identical
+checkpoints with the VAR-faithful probe (e_k construction unit-tested identical
+to the tokenizer dequant path):
+
+| target | q16 | q32 | q64 | q128 | q256 |
+|---|---:|---:|---:|---:|---:|
+| bertB gain (bits/code) | +0.14 | +0.13 | +0.24 | +0.33 | **+0.73** |
+| bertHybrid gain | +0.08 | +0.09 | +0.35 | +0.54 | **+1.11** |
+
+Gains positive everywhere, growing toward fine scales, monotone in the number
+of coarse scales stacked. Cross-scale information lives in codebook geometry +
+spatial alignment; any interface that discards them measures zero. Old numbers
+archived as `results/legacy_*_brokenprobe.json`.
+
+**Freeze verdict (final): bertHybrid** [1,8,16,32,64,128,256] — no tokenizer
+surgery needed. Binding Stage-1 constraint: the planner input must follow
+VAR's construction exactly.
+
+## Results round 5: Stage 1 Track 1 — VAR planner generation (2026-08-21)
+
+Planner (120.9M, 12L×768, per-block cross-attn, normalized-coordinate RoPE,
+block-causal mask, CFG) over frozen bertHybrid; matched AR baseline (108.5M,
+early-stopped at its val optimum); window continuation on WT103 test, n=1000.
+Full tables: `results/stage1_track1_summary.md`.
+
+- oracle 0.993 R1 / 0.999 MAUVE (tokenizer not the bottleneck)
+- AR: 0.331 R1 / 0.956 MAUVE — planner: 0.304 R1 / 0.416 MAUVE
+  (val-selected T=0.8, top_p=0.9, CFG=3; pre-registered config also reported)
+- Planner q256 val CE 6.75 bits/code vs 12.18 probe bound (−5.4 bits)
+- Planner val curve flat over 50k steps; AR overfits (4.45→5.79 bits val CE)
+- 1000 continuations in 23 s (7 forwards + 1 parallel decode)
+- Failure mode split: planner = on-topic but locally noisy (one-step parallel
+  sampling of 256 fine codes); AR = fluent but drifting content
+- Open risk: mid-scale conditional entropy ≈ 11–12/13 bits — coarse plan
+  barely constrains mid-level realization; discriminating experiments queued
+  (Track 2 scaling, oracle-coarse rendering isolation, long-form coherence)
