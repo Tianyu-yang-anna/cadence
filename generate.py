@@ -64,6 +64,46 @@ def decode_codes(tokenizer_model, codes_flat: torch.Tensor, scales, seq_len,
     return logits.argmax(-1)
 
 
+def plan_windows(ref_token_len: int, seq_len: int, chain_cap: int) -> int:
+    """Windows needed to cover the reference length, capped."""
+    import math
+    return min(chain_cap, max(1, math.ceil(ref_token_len / seq_len)))
+
+
+@torch.no_grad()
+def run_benchmark(rows, detok, gen_window, seq_len, out_path, *,
+                  max_prompt_tokens=512, chain_cap=4, device="cpu"):
+    """TextLDM-protocol continuation over free-text {prompt, reference} rows.
+
+    Prompts are variable-length (tokenized on the fly, suffix-truncated);
+    enough windows are chained to cover the reference, then the generated
+    text is word-truncated to the reference length so ROUGE/BERTScore are
+    not length-confounded. gen_window(prompt_ids)->ids is the model seam.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as fout:
+        for i, row in enumerate(rows):
+            prompt_text, ref_text = row["prompt"], row["reference"]
+            ids = detok(prompt_text, add_special_tokens=False)["input_ids"]
+            ids = ids[-max_prompt_tokens:]
+            cur = torch.tensor([ids], dtype=torch.long, device=device)
+            ref_ids = detok(ref_text, add_special_tokens=False)["input_ids"]
+            pieces = []
+            for _ in range(plan_windows(len(ref_ids), seq_len, chain_cap)):
+                out_ids = gen_window(cur)
+                pieces.append(out_ids)
+                cur = out_ids  # chain: generated window becomes prompt
+            text = detok.decode(torch.cat(pieces, dim=1)[0].cpu().tolist(),
+                                skip_special_tokens=True)
+            gen = " ".join(text.split()[: len(ref_text.split())])
+            fout.write(json.dumps({"index": i, "prompt": prompt_text,
+                                   "reference": ref_text, "generated": gen}) + "\n")
+            if (i + 1) % 100 == 0:
+                log_line(f"benchmark {i + 1}/{len(rows)}")
+    log_line(f"wrote {len(rows)} rows -> {out_path}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", required=True, choices=["planner", "ar", "oracle"])
@@ -78,6 +118,12 @@ def main():
     ap.add_argument("--top_p", type=float, default=0.95)
     ap.add_argument("--cfg", type=float, default=1.0)
     ap.add_argument("--chain", type=int, default=1, help="windows to chain")
+    ap.add_argument("--benchmark", default="",
+                    help="free-text benchmark jsonl {prompt, reference}; "
+                         "planner backend only")
+    ap.add_argument("--max_prompt_tokens", type=int, default=512)
+    ap.add_argument("--chain_cap", type=int, default=4,
+                    help="max windows chained per benchmark row")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -130,6 +176,32 @@ def main():
         ar.load_state_dict(payload["model"])
         ar.eval()
         log_line(f"AR ckpt {ckpt_path} (step {payload.get('step')})")
+
+    if args.benchmark:
+        assert args.backend == "planner", "--benchmark supports backend=planner only"
+        from contextlib import nullcontext as _nc
+
+        def _ac():
+            return (torch.autocast(device_type=device.type, dtype=autocast_dtype)
+                    if autocast_dtype else _nc())
+
+        def gen_window(cur):
+            with _ac():
+                feats = prompt_enc(cur)
+            codes = planner.generate(feats.float(), temperature=args.temperature,
+                                     top_k=args.top_k, top_p=args.top_p,
+                                     cfg_scale=args.cfg, generator=gen_rng)
+            return decode_codes(tokenizer_model, codes, scales, seq_len,
+                                tok_quant.upsample_mode, autocast_dtype)
+
+        rows = [json.loads(l)
+                for l in Path(args.benchmark).read_text().splitlines()][: args.n]
+        log_line(f"benchmark {args.benchmark}: {len(rows)} rows "
+                 f"(T={args.temperature}, top_p={args.top_p}, cfg={args.cfg})")
+        run_benchmark(rows, detok, gen_window, seq_len, args.out,
+                      max_prompt_tokens=args.max_prompt_tokens,
+                      chain_cap=args.chain_cap, device=device)
+        return
 
     bin_dir = Path(cfg.data.bin_dir)
     codes_dir = Path(cfg.planner.codes_dir) if cfg.planner.codes_dir else None

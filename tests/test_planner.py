@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 import torch
@@ -155,3 +157,45 @@ def test_ar_baseline_loss_mask_and_generate():
     gen = ar.generate(ids[:, :8], max_new_tokens=4,
                       generator=torch.Generator().manual_seed(0))
     assert gen.shape == (2, 4)
+
+
+def test_benchmark_mode_plan_and_truncation(tmp_path):
+    from generate import plan_windows, run_benchmark
+
+    assert plan_windows(10, 256, 4) == 1
+    assert plan_windows(256, 256, 4) == 1
+    assert plan_windows(257, 256, 4) == 2
+    assert plan_windows(5000, 256, 4) == 4   # capped
+
+    class FakeTok:
+        """whitespace tokenizer: one word = one id (word length as id)."""
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": [min(len(w), 9) for w in text.split()]}
+
+        def decode(self, ids, skip_special_tokens=True):
+            return " ".join(f"w{i}" for i in ids)
+
+    seq = 8
+    calls = []
+
+    def gen_window(cur):
+        calls.append(cur.shape[1])
+        return torch.full((1, seq), 3, dtype=torch.long)
+
+    rows = [
+        {"prompt": "a bb ccc", "reference": " ".join(["ref"] * 20)},   # 20 ids -> 3 windows
+        {"prompt": " ".join(["p"] * 30), "reference": "short ref"},    # 2 ids -> 1 window
+    ]
+    out = tmp_path / "gens.jsonl"
+    run_benchmark(rows, FakeTok(), gen_window, seq, out,
+                  max_prompt_tokens=5, chain_cap=4)
+    got = [json.loads(l) for l in out.read_text().splitlines()]
+    assert len(got) == 2
+    # row 0: ceil(20/8)=3 windows; first prompt is the full 3-word prompt
+    assert calls[0] == 3 and calls[1:3] == [seq, seq]
+    # row 1: prompt suffix-truncated to max_prompt_tokens
+    assert calls[3] == 5
+    # generated text word-truncated to the reference word count
+    assert len(got[0]["generated"].split()) == 20
+    assert len(got[1]["generated"].split()) == 2
+    assert got[0]["reference"].startswith("ref")
