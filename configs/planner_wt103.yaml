@@ -1,0 +1,37 @@
+# Stage 1 VAR planner on frozen bertHybrid tokenizer (Track 1).
+# ~120M trainable; frozen: bert-base-uncased prompt encoder + tokenizer.
+run_name: planner_wt103
+seed: 42
+model:
+  vocab_size: 30522        # text vocab (detokenizer side)
+  seq_len: 256
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/wikitext103_bert
+  num_workers: 4
+planner:
+  d_model: 768
+  n_layers: 12
+  n_heads: 12
+  ffn_mult: 4
+  cond_drop_p: 0.1
+  prompt_encoder: bert-base-uncased
+  tokenizer_run_dir: /tmp/cadence_local/runs/vqvae_wt103_hybrid
+  codes_dir: /tmp/cadence_local/data/codes_hybrid
+train:
+  max_steps: 50000
+  batch_size: 256
+  micro_batch_size: 32     # x8 GPUs = 256/step, accum 1
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 2000
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  bf16: true
+  log_interval: 50
+  eval_interval: 1000
+  eval_batches: 30
+  save_interval: 2000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

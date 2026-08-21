@@ -101,6 +101,21 @@ class TrainConfig:
 
 
 @dataclass
+class PlannerConfig:
+    """Stage 1 VAR planner (models/var_planner.py). The tokenizer is frozen
+    and referenced by checkpoint; scales/seq_len/codebook come from it."""
+    d_model: int = 768
+    n_layers: int = 12
+    n_heads: int = 12
+    ffn_mult: int = 4
+    rope_theta: float = 10000.0
+    cond_drop_p: float = 0.1        # CFG condition dropout
+    prompt_encoder: str = "bert-base-uncased"
+    tokenizer_run_dir: str = ""     # dir containing the frozen tokenizer ckpt
+    codes_dir: str = ""             # dir with codes_{split}.npy from dump_codes
+
+
+@dataclass
 class Config:
     run_name: str = "vqvae_dev"
     seed: int = 42
@@ -108,6 +123,7 @@ class Config:
     quantizer: QuantizerConfig = field(default_factory=QuantizerConfig)
     data: DataConfig = field(default_factory=DataConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+    planner: PlannerConfig = field(default_factory=PlannerConfig)
 
 
 def _build(cls: type, d: dict) -> Any:

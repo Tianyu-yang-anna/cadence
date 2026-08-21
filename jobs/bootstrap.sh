@@ -53,29 +53,34 @@ start_heartbeat() {
   HB_PID=$!
 }
 
+# bump ENV_VER when dependencies change: nodes rebuild + repack once
+ENV_VER=2
+
 mk_venv() {
-  log "building venv with uv"
+  log "building venv v$ENV_VER with uv"
   uv venv --python 3.12 --python-preference only-managed "$VENVS/main" || return 1
   uv pip install --python "$PY" --upgrade pip "setuptools<81" wheel || return 1
   uv pip install --python "$PY" "torch==2.7.1" --index-url https://download.pytorch.org/whl/cu126 || return 1
   uv pip install --python "$PY" "transformers>=4.45,<5" "datasets>=2.20" numpy pyyaml tqdm || return 1
+  # generation-eval deps (v2)
+  uv pip install --python "$PY" rouge-score bert-score mauve-text scikit-learn faiss-cpu || return 1
 }
 
 pack_env() {
-  log "packing venv (+uv pythons) to $VOL/envs/venv-main.tgz"
+  log "packing venv (+uv pythons) to $VOL/envs/venv-main-v$ENV_VER.tgz"
   tar -C "$LOCAL_ROOT" -czf "$LOCAL_ROOT/venv-main.tgz" venvs uvpy || return 1
-  cp -f "$LOCAL_ROOT/venv-main.tgz" "$VOL/envs/venv-main.tgz" || return 1
-  touch "$LOCAL_ROOT/env.done" && cp -f "$LOCAL_ROOT/env.done" "$VOL/status/env-main.done"
+  cp -f "$LOCAL_ROOT/venv-main.tgz" "$VOL/envs/venv-main-v$ENV_VER.tgz" || return 1
+  touch "$LOCAL_ROOT/env.done" && cp -f "$LOCAL_ROOT/env.done" "$VOL/status/env-main-v$ENV_VER.done"
 }
 
 restore_env() {
-  log "restoring venv from Volume"
-  cp -f "$VOL/envs/venv-main.tgz" "$LOCAL_ROOT/venv-main.tgz" || return 1
+  log "restoring venv v$ENV_VER from Volume"
+  cp -f "$VOL/envs/venv-main-v$ENV_VER.tgz" "$LOCAL_ROOT/venv-main.tgz" || return 1
   tar -C "$LOCAL_ROOT" -xzf "$LOCAL_ROOT/venv-main.tgz" || return 1
 }
 
 ensure_env() {
-  if [ -f "$VOL/status/env-main.done" ] && [ -f "$VOL/envs/venv-main.tgz" ]; then
+  if [ -f "$VOL/status/env-main-v$ENV_VER.done" ] && [ -f "$VOL/envs/venv-main-v$ENV_VER.tgz" ]; then
     restore_env || return 1
   else
     mk_venv || return 1
