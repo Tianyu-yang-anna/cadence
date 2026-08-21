@@ -69,30 +69,31 @@ def main():
 
     for split in ("val", "test", "train"):  # held-out splits come first
         target = budgets[split]
-        chunks, total, n_docs = [], 0, 0
-        while total < target:
-            while len(docs_buf) < args.batch_docs:
-                try:
-                    row = next(stream)
-                except StopIteration:
+        total, n_docs = 0, 0
+        # stream straight to disk: buffering 4B tokens as a list of arrays and
+        # np.concatenate-ing needs >2x the bin size in host RAM (SIGABRT on
+        # the 1xH100 pods); local /tmp supports append (FUSE Volumes do not)
+        with open(out / f"{split}.bin", "wb") as f:
+            while total < target:
+                while len(docs_buf) < args.batch_docs:
+                    try:
+                        row = next(stream)
+                    except StopIteration:
+                        break
+                    text = row.get("text") or ""
+                    if text.strip():
+                        docs_buf.append(text)
+                if not docs_buf:
                     break
-                text = row.get("text") or ""
-                if text.strip():
-                    docs_buf.append(text)
-            if not docs_buf:
-                break
-            for arr in encode_batch(docs_buf):
-                chunks.append(arr)
-                total += arr.size
-                n_docs += 1
-            docs_buf.clear()
-            if split == "train" and n_docs % 51200 < args.batch_docs:
-                print(f"train: {total/1e9:.2f}B/{target/1e9:.1f}B tokens", flush=True)
-        stream_out = np.concatenate(chunks) if chunks else np.zeros(0, np.uint16)
-        stream_out.tofile(out / f"{split}.bin")
-        meta["splits"][split] = {"n_docs": n_docs, "n_tokens": int(stream_out.size)}
-        print(f"{split}: {n_docs} docs, {stream_out.size} tokens", flush=True)
-        del chunks, stream_out
+                for arr in encode_batch(docs_buf):
+                    arr.tofile(f)
+                    total += arr.size
+                    n_docs += 1
+                docs_buf.clear()
+                if split == "train" and n_docs % 51200 < args.batch_docs:
+                    print(f"train: {total/1e9:.2f}B/{target/1e9:.1f}B tokens", flush=True)
+        meta["splits"][split] = {"n_docs": n_docs, "n_tokens": total}
+        print(f"{split}: {n_docs} docs, {total} tokens", flush=True)
     with open(out / "meta.json", "w") as f:
         json.dump(meta, f, indent=2)
 
