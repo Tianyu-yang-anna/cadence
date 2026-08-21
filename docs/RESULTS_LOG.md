@@ -215,3 +215,27 @@ Full tables: `results/stage1_track1_summary.md`.
 - Open risk: mid-scale conditional entropy ≈ 11–12/13 bits — coarse plan
   barely constrains mid-level realization; discriminating experiments queued
   (Track 2 scaling, oracle-coarse rendering isolation, long-form coherence)
+
+## Results round 6: Stage 1 Track 2 — TextLDM-protocol benchmarks (2026-08-22)
+
+Tokenizer `vqvae_owt_gpt2hybrid`: GPT-2 BPE, hybrid schedule, 4B-token OWT
+slice, 100k steps 8×H100 (first multi-GPU VQ-EMA run — all-reduced EMA stats,
+codebook healthy) → **99.39% test reconstruction**. Planner `planner_owt`:
+335.7M, 100k steps, val CE still falling at the end (zero overfitting);
+finest-scale val CE **4.03 bits/code** (Track 1 planner: 6.75 — positive
+scaling response with 30× data + 3× params).
+
+Four TextLDM benchmarks (prefix 40–60%, n=1000 each, sampling carried over
+from Track 1 val selection): full table + paper comparison in
+`results/stage1_track2_summary.md`. Headlines (paper units ×100):
+- Wikipedia MAUVE **15.1** — highest value in TextLDM's Table 1 (their best
+  10.5); R-1 24.3 above pretrained GPT-2-137M (23.3).
+- ROUGE-1 in the GPT-2-137M / TextLDM-114M band on WikiSource / Wikipedia /
+  TinyStories; ROUGE-2 systematically low (fine-scale bigram noise, the known
+  rendering failure mode).
+- 1BW weakest (R-1 9.3): sentence-length prompts are OOD for a planner
+  trained only on 256-token prompt windows (diagnosed from samples; fix =
+  mixed-length prompt training).
+- Caveats: re-drawn sample sets, different tokenizer (GPT-2 vs Qwen3),
+  256-token windows vs 1024 native, far less training compute (100k steps
+  vs TextLDM DiT 2M).

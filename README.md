@@ -146,9 +146,18 @@ Window continuation, test n=1000, sampling selected on val — full analysis in 
 
 Takeaways: (1) pipeline validated end-to-end, lexical metrics within ~0.03 of matched AR; (2) the MAUVE gap is **rendering, not planning** — the finest scale (256 residual codes) is sampled in one parallel step, giving locally-noisy but on-topic text, while AR is locally fluent but drifts; (3) planner next-scale CE at q256 = 6.75 bits/code vs the 12.18 Stage-0 probe bound — the full architecture extracts 5.4 bits/code more than a linear probe; (4) planner barely overfits where AR degrades 30% (multi-scale factorization + frozen components regularize); (5) fairness caveat: the planner's prompt encoder is pretrained BERT, the AR baseline is fully from-scratch.
 
-### Track 2: TextLDM-protocol benchmark (in progress)
+### Track 2: TextLDM-protocol benchmarks (OWT, 336M planner)
 
-GPT-2 BPE hybrid tokenizer retrained on a 4B-token OpenWebText slice (**99.39%** test reconstruction, first multi-GPU VQ-EMA run); 336M planner (20L×1024) training; evaluation on the four TextLDM benchmarks (TinyStories / 1BW / Wikipedia / WikiSource, 1000 continuations each, 40–60% prefix split) via `generate.py --benchmark`.
+GPT-2 BPE hybrid tokenizer retrained on a 4B-token OpenWebText slice (**99.39%** test reconstruction, first multi-GPU VQ-EMA run); 336M planner (20L×1024, 100k steps ≈ 1.6 epochs); four TextLDM benchmarks, 1000 continuations each, 40–60% prefix split. Full comparison against TextLDM's Table 1 (GPT-2 + diffusion baselines) with comparability caveats: [`results/stage1_track2_summary.md`](results/stage1_track2_summary.md).
+
+| benchmark (paper units ×100) | R-1 | R-2 | R-L | BERTScore | MAUVE |
+|---|--|--|--|--|--|
+| WikiSource | 29.3 | 3.5 | 14.9 | 79.5 | 8.4 |
+| Wikipedia | 24.3 | 3.0 | 12.8 | 78.5 | **15.1** (best in table) |
+| TinyStories | 30.4 | 4.1 | 17.4 | 82.9 | 0.58 |
+| One Billion Words | 9.3 | 0.4 | 7.9 | 81.7 | 0.64 |
+
+ROUGE-1 lands in the GPT-2-137M / TextLDM-114M band at a fraction of their training compute; Wikipedia MAUVE beats every model in TextLDM's table; 1BW is diagnosed prompt-length OOD (planner trained only on 256-token prompts). Scaling response is positive: finest-scale val CE dropped 6.75 → **4.03** bits/code with 30× data + 3× params, still improving at 100k steps.
 
 ```bash
 # Stage 1 training + evaluation (Track 1)
