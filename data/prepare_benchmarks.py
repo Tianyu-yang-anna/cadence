@@ -81,3 +81,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # streaming-dataset background threads (aiohttp/fsspec) crash the
+    # interpreter during finalization (PyGILState_Release, rc=134); all
+    # output files are closed by this point, so skip teardown entirely
+    import os
+    os._exit(0)
