@@ -20,14 +20,23 @@ SOURCES = {
     "tinystories": ("roneneldan/TinyStories", None, "validation"),
     "lm1b": ("billion-word-benchmark/lm1b", None, "test"),
     "wikipedia": ("wikimedia/wikipedia", "20231101.en", "train"),
-    "wikisource": ("wikimedia/wikisource", "20231101.en", "train"),
+    "wikisource": ("wikimedia/wikisource", "20231201.en", "train"),
 }
 
 
 def load_stream(name: str):
     from datasets import load_dataset
     path, config, split = SOURCES[name]
-    ds = load_dataset(path, config, split=split, streaming=True)
+    if name == "lm1b":
+        # script-based dataset, unsupported since datasets>=3: read the HF
+        # parquet conversion branch directly
+        ds = load_dataset(
+            "parquet",
+            data_files={split: f"hf://datasets/{path}@refs/convert/parquet/"
+                               f"plain_text/{split}/*.parquet"},
+            split=split, streaming=True)
+    else:
+        ds = load_dataset(path, config, split=split, streaming=True)
     return iter(ds)
 
 

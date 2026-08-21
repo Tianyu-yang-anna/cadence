@@ -11,24 +11,32 @@ trap 'kill "$HB_PID" 2>/dev/null' EXIT
 ensure_env || { log "ABORT: env"; exit 1; }
 
 OUT="$LOCAL_ROOT/data/$DATA_OUT"
+if [ -f "$VOL/status/data-$DATA_OUT.done" ]; then
+  log "OWT bins already on Volume; skipping straight to benchmarks"
+  SKIP_OWT=1
+else
+  SKIP_OWT=0
+fi
 log "preparing OWT slice ($MAX_TOKENS tokens) -> $OUT"
 ( while true; do sleep 120; cp -f "$LOG_LOCAL" "$VOL/logs/$JOB_TAG.log" 2>/dev/null || true; done ) &
 PUSH_PID=$!
-(cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_owt.py \
-    --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT") >> "$LOG_LOCAL" 2>&1
-rc=$?
-kill "$PUSH_PID" 2>/dev/null
-push_log
-[ $rc -ne 0 ] && { log "OWT prep FAILED rc=$rc"; exit $rc; }
-mkdir -p "$VOL/data/$DATA_OUT"
-cp -f "$OUT"/*.bin "$OUT"/meta.json "$VOL/data/$DATA_OUT/" || exit 1
-touch "$LOCAL_ROOT/owt.done" && cp -f "$LOCAL_ROOT/owt.done" "$VOL/status/data-$DATA_OUT.done"
-log "OWT bins on Volume"
+if [ "$SKIP_OWT" != "1" ]; then
+  (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_owt.py \
+      --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT") >> "$LOG_LOCAL" 2>&1
+  rc=$?
+  push_log
+  [ $rc -ne 0 ] && { kill "$PUSH_PID" 2>/dev/null; log "OWT prep FAILED rc=$rc"; exit $rc; }
+  mkdir -p "$VOL/data/$DATA_OUT"
+  cp -f "$OUT"/*.bin "$OUT"/meta.json "$VOL/data/$DATA_OUT/" || exit 1
+  touch "$LOCAL_ROOT/owt.done" && cp -f "$LOCAL_ROOT/owt.done" "$VOL/status/data-$DATA_OUT.done"
+  log "OWT bins on Volume"
+fi
 
 BOUT="$LOCAL_ROOT/data/benchmarks"
 log "preparing TextLDM benchmarks"
 (cd "$CODE" && "$PY" data/prepare_benchmarks.py --out "$BOUT") >> "$LOG_LOCAL" 2>&1
 rc=$?
+kill "$PUSH_PID" 2>/dev/null
 push_log
 [ $rc -ne 0 ] && { log "benchmark prep FAILED rc=$rc"; exit $rc; }
 mkdir -p "$VOL/data/benchmarks"
