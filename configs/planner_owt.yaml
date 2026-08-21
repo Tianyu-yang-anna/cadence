@@ -1,0 +1,35 @@
+# Track 2 planner (~330M-class, TextLDM mid-size) over the OWT GPT-2 hybrid
+# tokenizer. Prompt encoder = gpt2 (same vocab as the data bins — no
+# re-tokenization; causal hidden states as prompt features).
+run_name: planner_owt
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 256
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/owt_gpt2
+  num_workers: 4
+planner:
+  d_model: 1024
+  n_layers: 20
+  n_heads: 16
+  ffn_mult: 4
+  cond_drop_p: 0.1
+  prompt_encoder: gpt2
+  tokenizer_run_dir: /tmp/cadence_local/runs/vqvae_owt_gpt2hybrid
+  codes_dir: /tmp/cadence_local/data/codes_owt
+train:
+  max_steps: 100000
+  batch_size: 256
+  micro_batch_size: 16            # bigger model; x8 GPUs, accum 2
+  lr: 2.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 2000
+  bf16: true
+  log_interval: 50
+  eval_interval: 2000
+  eval_batches: 30
+  save_interval: 4000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

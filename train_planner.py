@@ -100,6 +100,16 @@ def main():
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
+    # provenance: dumped codes must come from THIS tokenizer checkpoint —
+    # code/codebook mismatches load silently and poison training
+    import json as _json
+    codes_meta = _json.loads(
+        (Path(cfg.planner.codes_dir) / "codes_meta.json").read_text())
+    assert codes_meta["scales"] == scales, \
+        f"codes scales {codes_meta['scales']} != tokenizer scales {scales}"
+    assert Path(codes_meta["ckpt"]).name == Path(tok_ckpt).name, \
+        f"codes were dumped from {codes_meta['ckpt']}, tokenizer is {tok_ckpt}"
+
     prompt_enc = FrozenPromptEncoder(cfg.planner.prompt_encoder).to(device)
     planner = VARPlanner(
         scales=scales, seq_len=seq_len, codebook=codebook,
@@ -126,7 +136,9 @@ def main():
     for name, p in raw.named_parameters():
         if not p.requires_grad:
             continue
-        (no_decay if p.ndim < 2 else decay).append(p)
+        is_nd = (p.ndim < 2 or "scale_emb" in name or "pool_query" in name
+                 or "null_" in name)
+        (no_decay if is_nd else decay).append(p)
     optimizer = torch.optim.AdamW(
         [{"params": decay, "weight_decay": cfg.train.weight_decay},
          {"params": no_decay, "weight_decay": 0.0}],

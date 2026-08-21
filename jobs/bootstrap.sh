@@ -81,7 +81,9 @@ restore_env() {
 
 ensure_env() {
   if [ -f "$VOL/status/env-main-v$ENV_VER.done" ] && [ -f "$VOL/envs/venv-main-v$ENV_VER.tgz" ]; then
-    restore_env || return 1
+    # corrupted/truncated tarball on the Volume must not brick every node:
+    # fall back to a fresh build + repack
+    restore_env || { log "restore failed; rebuilding venv from scratch"; mk_venv && pack_env; } || return 1
   else
     mk_venv || return 1
     pack_env || return 1

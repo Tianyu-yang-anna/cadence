@@ -1,0 +1,35 @@
+# Track 2 tokenizer: GPT-2 BPE (cased, lossless) on an OpenWebText slice,
+# hybrid schedule per the Stage 0 freeze recipe. Trained with 8xH100 DDP.
+run_name: vqvae_owt_gpt2hybrid
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 256
+  d_model: 512
+  d_code: 32
+  encoder: {num_layers: 6, num_heads: 8}
+  decoder: {num_layers: 8, num_heads: 8}
+quantizer:
+  scales: [1, 8, 16, 32, 64, 128, 256]
+  codebook_size: 8192
+  revival: {enabled: true, threshold: 1.0, interval: 175}   # 25 x K
+data:
+  dataset: wikitext103            # bin-based contiguous loading
+  bin_dir: /tmp/cadence_local/data/owt_gpt2
+  num_workers: 4
+train:
+  max_steps: 100000               # bigger corpus, longer schedule
+  batch_size: 256
+  micro_batch_size: 32            # x8 GPUs
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 2000
+  bf16: true
+  bypass_vq_steps: 5000
+  scale_dropout_p: 0.5
+  log_interval: 50
+  eval_interval: 2000
+  eval_batches: 50
+  save_interval: 4000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

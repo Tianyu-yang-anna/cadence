@@ -9,6 +9,13 @@ Backends:
 
 Output: JSONL rows {index, prompt, reference, generated} for eval_generation.py.
 
+Fairness note: the planner reads the prompt through a frozen *pretrained*
+encoder (bert-base-uncased), while the AR baseline consumes raw prompt tokens
+with from-scratch weights only — the planner gets pretrained knowledge the AR
+model does not. Any planner-vs-AR comparison must report this asymmetry
+(mitigation: the oracle row bounds decoder quality, and the AR baseline is
+matched on parameters/steps, not on pretrained inputs).
+
 Usage:
   python generate.py --backend planner --config configs/planner_wt103.yaml \
       --ckpt auto --split test --n 1000 --cfg 3.0 --top_p 0.95 --out gens.jsonl
@@ -126,6 +133,10 @@ def main():
 
     bin_dir = Path(cfg.data.bin_dir)
     codes_dir = Path(cfg.planner.codes_dir) if cfg.planner.codes_dir else None
+    if args.backend in ("planner", "oracle"):
+        codes_meta = json.loads((codes_dir / "codes_meta.json").read_text())
+        assert codes_meta["scales"] == scales, \
+            f"codes scales {codes_meta['scales']} != tokenizer scales {scales}"
     pairs = PlannerPairs(bin_dir / f"{args.split}.bin",
                          codes_dir / f"codes_{args.split}.npy",
                          seq_len)
@@ -154,14 +165,14 @@ def main():
             if args.backend == "oracle":
                 ids = decode_codes(tokenizer_model, ref_codes, scales, seq_len,
                                    tok_quant.upsample_mode, autocast_dtype)
-                gen_texts = [detok.decode(r.tolist()) for r in ids.cpu()]
+                gen_texts = [detok.decode(r.tolist(), skip_special_tokens=True) for r in ids.cpu()]
             elif args.backend == "ar":
                 with ac():
                     new_ids = ar.generate(prompt_ids, seq_len * args.chain,
                                           temperature=args.temperature,
                                           top_k=args.top_k, top_p=args.top_p,
                                           generator=gen_rng)
-                gen_texts = [detok.decode(r.tolist()) for r in new_ids.cpu()]
+                gen_texts = [detok.decode(r.tolist(), skip_special_tokens=True) for r in new_ids.cpu()]
             else:  # planner
                 cur_prompt = prompt_ids
                 pieces = []
@@ -177,17 +188,14 @@ def main():
                     pieces.append(ids)
                     cur_prompt = ids  # chain: generated window becomes prompt
                 all_ids = torch.cat(pieces, dim=1)
-                gen_texts = [detok.decode(r.tolist()) for r in all_ids.cpu()]
+                gen_texts = [detok.decode(r.tolist(), skip_special_tokens=True) for r in all_ids.cpu()]
 
-            ref_ids = decode_codes(tokenizer_model, ref_codes, scales, seq_len,
-                                   tok_quant.upsample_mode, autocast_dtype) \
-                if args.backend == "oracle" else None
             for j, i in enumerate(idxs):
                 # reference = true next-window text (from raw bins, not codes)
                 ref_window = pairs.windows[i + 1]["input_ids"]
                 row = {"index": i,
-                       "prompt": detok.decode(prompt_ids[j].cpu().tolist()),
-                       "reference": detok.decode(ref_window.tolist()),
+                       "prompt": detok.decode(prompt_ids[j].cpu().tolist(), skip_special_tokens=True),
+                       "reference": detok.decode(ref_window.tolist(), skip_special_tokens=True),
                        "generated": gen_texts[j]}
                 fout.write(json.dumps(row) + "\n")
             fout.flush()

@@ -34,8 +34,12 @@ if [ -z "$latest" ] || [ ! -f "$VCK/$latest" ]; then
   latest=$(cd "$VCK" 2>/dev/null && ls ckpt_step*.pt 2>/dev/null | sort -V | tail -1)
 fi
 if [ -n "$latest" ] && [ -f "$VCK/$latest" ]; then
-  log "resume: restoring $latest + jsonl history from Volume"
-  cp -f "$VCK/$latest" "$RUN_DIR/$latest"
+  log "resume: restoring ALL ckpts + jsonl history from Volume"
+  # restore every ckpt so the mirror-deletion in sync_once cannot prune
+  # Volume history after a resume
+  for c in "$VCK"/ckpt_step*.pt; do
+    [ -f "$c" ] && cp -f "$c" "$RUN_DIR/$(basename "$c")"
+  done
   printf '%s\n' "$latest" > "$RUN_DIR/latest.txt"
   for f in metrics.jsonl eval.jsonl; do
     [ -f "$VCK/$f" ] && cp -f "$VCK/$f" "$RUN_DIR/$f"
@@ -47,12 +51,21 @@ sync_once() {
     [ -f "$RUN_DIR/$f" ] && cp -f "$RUN_DIR/$f" "$VCK/$f" 2>/dev/null
   done
   # 1) copy new/updated ckpts  2) update pointer LAST  3) mirror local rotation
+  ptr_ok=1
+  ptr_name=$(tr -d '[:space:]' < "$RUN_DIR/latest.txt" 2>/dev/null || echo "")
   for c in "$RUN_DIR"/ckpt_step*.pt; do
     [ -f "$c" ] || continue
     b=$(basename "$c")
-    [ -f "$VCK/$b" ] || cp -f "$c" "$VCK/$b" 2>/dev/null
+    ss=$(stat -c%s "$c" 2>/dev/null || stat -f%z "$c" 2>/dev/null || echo 0)
+    ds=$(stat -c%s "$VCK/$b" 2>/dev/null || stat -f%z "$VCK/$b" 2>/dev/null || echo -1)
+    if [ "$ss" != "$ds" ]; then
+      cp -f "$c" "$VCK/$b" 2>/dev/null
+      ds=$(stat -c%s "$VCK/$b" 2>/dev/null || stat -f%z "$VCK/$b" 2>/dev/null || echo -1)
+      if [ "$ss" != "$ds" ] && [ "$b" = "$ptr_name" ]; then ptr_ok=0; fi
+    fi
   done
-  [ -f "$RUN_DIR/latest.txt" ] && cp -f "$RUN_DIR/latest.txt" "$VCK/latest.txt" 2>/dev/null
+  # advance the pointer only if its target verified (size-matched) on the Volume
+  [ "$ptr_ok" = "1" ] && [ -f "$RUN_DIR/latest.txt" ] && cp -f "$RUN_DIR/latest.txt" "$VCK/latest.txt" 2>/dev/null
   # mirror local rotation ONLY once the trainer has produced local ckpts;
   # a fresh un-resumed start must never delete Volume history
   if ls "$RUN_DIR"/ckpt_step*.pt >/dev/null 2>&1; then

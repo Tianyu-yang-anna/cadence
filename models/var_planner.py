@@ -241,7 +241,11 @@ class VARPlanner(nn.Module):
                                           self.seq_len, self.upsample_mode)
         start = self._pooled_start(prompt_feats)
         ctx = prompt_feats
-        if cond_drop is not None and cond_drop.any():
+        if cond_drop is not None:
+            # ALWAYS run the substitution (even for an all-False mask): the
+            # null parameters must enter the autograd graph on every step or
+            # DDP's reducer (find_unused_parameters=False) deadlocks when a
+            # micro-batch happens to sample zero condition-drops.
             start = torch.where(cond_drop[:, None],
                                 self.null_start[None].to(start.dtype), start)
             null_ctx = self.null_prompt.to(ctx.dtype).expand(B, ctx.shape[1], -1)
