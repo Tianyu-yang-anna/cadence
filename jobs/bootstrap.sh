@@ -105,6 +105,12 @@ ensure_data() {
     log "restoring $name bins from Volume"
     cp -f "$VOL/data/$name/"*.bin "$VOL/data/$name/meta.json" "$ddir/" || return 1
   else
+    # on-node preparation only knows how to build WikiText — refuse anything
+    # else instead of fabricating wrong bins under the requested name
+    case "$name" in
+      wikitext103|wikitext103_bert) : ;;
+      *) log "ABORT: no prepared bins for '$name' on the Volume and on-node prep only supports wikitext — run the matching prep job first"; return 1 ;;
+    esac
     log "preparing $name on node (tokenizer=$tok; download + tokenize)"
     # live progress: push the local log to the Volume every 60s while prep runs
     ( while true; do sleep 60; cp -f "$LOG_LOCAL" "$VOL/logs/$JOB_TAG.log" 2>/dev/null || true; done ) &

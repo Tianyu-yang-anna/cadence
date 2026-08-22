@@ -97,9 +97,13 @@ class PlannerPairs(Dataset):
             np.asarray(self.codes[i + 1], dtype=np.int64))          # window t+1
         if self.prompt_len_cfg is not None or self.history_max > 0:
             rng = random.Random(self.rng_seed * 1_000_000_000 + i)
-            if self.prompt_len_cfg is not None:
-                prompt = prompt[-self._prompt_len(rng):]  # SUFFIX of window t
-            if self.history_max > 0:
+            plen = (self._prompt_len(rng) if self.prompt_len_cfg is not None
+                    else self.seq_len)
+            prompt = prompt[-plen:]                       # SUFFIX of window t
+            # history only when window t is kept WHOLE: prepending full windows
+            # onto a suffix would put an unmarked token gap mid-prompt — a text
+            # distribution that never occurs at inference (review finding)
+            if self.history_max > 0 and plen == self.seq_len:
                 # windows t-h..t-1, truncated to same-document (no separator)
                 h = rng.randint(0, self.history_max)
                 while h > 0 and (i - h < 0 or self.win_has_sep[i - h:i].any()):

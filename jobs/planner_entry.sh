@@ -10,7 +10,7 @@ export JOB_TAG="planner-$RUN_NAME"
 source "$(dirname "${BASH_SOURCE[0]}")/bootstrap.sh"
 
 start_heartbeat
-log "planner train run=$RUN_NAME config=$CONFIG codes=$CODES_NAME tok=$TOKENIZER_RUN"
+log "planner train run=$RUN_NAME config=$CONFIG codes=$CODES_NAME tok=${TOK_FULL_NAME:-$TOKENIZER_RUN} data=${DATA_NAME:-wikitext103} full=${FULL_NAME:-planner_wt103_$RUN_NAME}"
 ensure_env || { log "ABORT: env"; exit 1; }
 ensure_data || { log "ABORT: data"; exit 1; }
 

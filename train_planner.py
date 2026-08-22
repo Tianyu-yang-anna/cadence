@@ -109,6 +109,16 @@ def main():
         f"codes scales {codes_meta['scales']} != tokenizer scales {scales}"
     assert Path(codes_meta["ckpt"]).name == Path(tok_ckpt).name, \
         f"codes were dumped from {codes_meta['ckpt']}, tokenizer is {tok_ckpt}"
+    # alignment: codes row i must correspond to bin window i — a codes file
+    # dumped from a DIFFERENT corpus has the right scales/ckpt but wrong rows
+    import os as _os
+    for _split, _n_meta in codes_meta.get("splits", {}).items():
+        _bp = Path(cfg.data.bin_dir) / f"{_split}.bin"
+        if _bp.exists():
+            _n_bin = _os.path.getsize(_bp) // 2 // seq_len
+            assert _n_meta == _n_bin, \
+                (f"codes_{_split} has {_n_meta} rows but {_bp} has {_n_bin} "
+                 f"windows — codes were dumped from a different corpus")
 
     prompt_enc = FrozenPromptEncoder(cfg.planner.prompt_encoder).to(device)
     planner = VARPlanner(
@@ -197,7 +207,10 @@ def main():
                                        **pair_kwargs)
 
     def infinite():
-        epoch = 0
+        # seed the epoch counter with start_step: a resume then draws a FRESH
+        # shuffle permutation instead of replaying the head of epoch 0
+        # (review finding — preemptible chains were oversampling early batches)
+        epoch = start_step
         while True:
             if sampler is not None:
                 sampler.set_epoch(epoch)

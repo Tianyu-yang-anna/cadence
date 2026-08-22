@@ -60,11 +60,15 @@ def main():
             "scales": scales, "splits": {}}
     for split in ("train", "val", "test"):
         ds = build_dataset(cfg, split)
+        path = out / f"codes_{split}.npy"
+        # streamed int16 memmap: full-corpus dumps must not materialize in RAM
         codes = dump_codes(model, ds, device, n_windows=len(ds),
-                           batch_size=args.batch_size, autocast_dtype=autocast_dtype)
-        np.save(out / f"codes_{split}.npy", codes.astype(np.int16))
+                           batch_size=args.batch_size,
+                           autocast_dtype=autocast_dtype, out_path=path)
         meta["splits"][split] = int(codes.shape[0])
-        log_line(f"{split}: {codes.shape[0]} windows -> {out / f'codes_{split}.npy'}")
+        n_rows = int(codes.shape[0])
+        del codes  # release the memmap before the next split
+        log_line(f"{split}: {n_rows} windows -> {path}")
     with open(out / "codes_meta.json", "w") as f:
         json.dump(meta, f, indent=2)
     print(json.dumps(meta, indent=2), flush=True)
