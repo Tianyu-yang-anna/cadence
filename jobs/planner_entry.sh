@@ -104,11 +104,15 @@ fi
 MN_NODES="${NUM_NODES:-1}"
 MN_RANK="${NODE_RANK:-0}"
 MN_MASTER="${MASTER_ADDR:-}"
+MN_PORT="${MASTER_PORT:-29511}"
 if [ "$MN_NODES" -gt 1 ] && [ -n "$MN_MASTER" ]; then
-  log "multi-node DDP: $MN_NODES nodes x $NPROC GPUs (node_rank=$MN_RANK master=$MN_MASTER)"
+  log "multi-node DDP: $MN_NODES nodes x $NPROC GPUs (node_rank=$MN_RANK master=$MN_MASTER:$MN_PORT)"
+  # join_timeout must cover per-node bootstrap skew (each node restores ~38GB
+  # of codes from the Volume before reaching the rendezvous)
   LAUNCH=("$VENVS/main/bin/torchrun" --nnodes="$MN_NODES" --node_rank="$MN_RANK" \
           --nproc_per_node="$NPROC" --rdzv_backend=c10d \
-          --rdzv_endpoint="$MN_MASTER:29511" --rdzv_conf=timeout=1800 --max-restarts=0)
+          --rdzv_endpoint="$MN_MASTER:$MN_PORT" \
+          --rdzv_conf=join_timeout=3600,timeout=3600,read_timeout=600 --max-restarts=0)
 elif [ "${NPROC:-1}" -gt 1 ]; then
   log "launching torchrun DDP on $NPROC GPUs"
   LAUNCH=("$VENVS/main/bin/torchrun" --standalone --nproc_per_node="$NPROC")
