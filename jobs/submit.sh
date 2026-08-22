@@ -16,7 +16,9 @@ shift $(( $# < 4 ? $# : 4 ))
 case "$GPU" in
   1xh100) GPUS=1; GPU_TYPE=GPU_1xH100 ;;
   8xh100) GPUS=8; GPU_TYPE=GPU_8xH100 ;;
-  *) echo "unknown gpu '$GPU' (1xh100|8xh100)"; exit 1 ;;
+  16xh100) GPUS=16; GPU_TYPE=GPU_8xH100 ;;   # 2 nodes
+  32xh100) GPUS=32; GPU_TYPE=GPU_8xH100 ;;   # 4 nodes
+  *) echo "unknown gpu '$GPU' (1xh100|8xh100|16xh100|32xh100)"; exit 1 ;;
 esac
 
 NAME="cadence-$STAGE${SUFFIX:+-$SUFFIX}"

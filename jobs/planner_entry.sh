@@ -87,16 +87,29 @@ sync_once() {
   cp -f "$LOCAL_ROOT/progress-$RUN_NAME.txt" "$VOL/status/planner-$RUN_NAME-progress.txt" 2>/dev/null || true
   push_log
 }
-( while true; do sleep 300; sync_once; done ) &
-SIDECAR_PID=$!
-trap 'kill "$SIDECAR_PID" "$HB_PID" 2>/dev/null' EXIT
+if [ "${NODE_RANK:-0}" = "0" ]; then
+  ( while true; do sleep 300; sync_once; done ) &
+  SIDECAR_PID=$!
+else
+  SIDECAR_PID=""
+fi
+trap 'kill $SIDECAR_PID "$HB_PID" 2>/dev/null' EXIT
 
 if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
   NPROC=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F, '{print NF}')
 else
   NPROC=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')
 fi
-if [ "${NPROC:-1}" -gt 1 ]; then
+# capture platform gang-scheduling vars BEFORE the env scrub
+MN_NODES="${NUM_NODES:-1}"
+MN_RANK="${NODE_RANK:-0}"
+MN_MASTER="${MASTER_ADDR:-}"
+if [ "$MN_NODES" -gt 1 ] && [ -n "$MN_MASTER" ]; then
+  log "multi-node DDP: $MN_NODES nodes x $NPROC GPUs (node_rank=$MN_RANK master=$MN_MASTER)"
+  LAUNCH=("$VENVS/main/bin/torchrun" --nnodes="$MN_NODES" --node_rank="$MN_RANK" \
+          --nproc_per_node="$NPROC" --rdzv_backend=c10d \
+          --rdzv_endpoint="$MN_MASTER:29511" --rdzv_conf=timeout=1800 --max-restarts=0)
+elif [ "${NPROC:-1}" -gt 1 ]; then
   log "launching torchrun DDP on $NPROC GPUs"
   LAUNCH=("$VENVS/main/bin/torchrun" --standalone --nproc_per_node="$NPROC")
 else
@@ -109,8 +122,12 @@ fi
     "${LAUNCH[@]}" train_planner.py --config "$CONFIG" \
     --set "run_name=$FULL_RUN_NAME" $EXTRA_ARGS --resume auto) >> "$LOG_LOCAL" 2>&1
 rc=$?
-kill "$SIDECAR_PID" 2>/dev/null
-sync_once
+if [ "${NODE_RANK:-0}" = "0" ]; then
+  kill $SIDECAR_PID 2>/dev/null
+  sync_once
+fi
 [ $rc -ne 0 ] && { log "planner train FAILED rc=$rc (resubmit to resume)"; exit $rc; }
-touch "$LOCAL_ROOT/pl.done" && cp -f "$LOCAL_ROOT/pl.done" "$VOL/status/planner-$RUN_NAME.done"
+if [ "${NODE_RANK:-0}" = "0" ]; then
+  touch "$LOCAL_ROOT/pl.done" && cp -f "$LOCAL_ROOT/pl.done" "$VOL/status/planner-$RUN_NAME.done"
+fi
 log "planner train DONE"
