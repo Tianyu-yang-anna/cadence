@@ -107,16 +107,23 @@ def main():
     assert n_accum >= 1 and n_accum * micro * world == cfg.train.batch_size
 
     bin_dir = Path(cfg.data.bin_dir)
+    sep_id = None
+    if getattr(cfg.planner, "doc_aware", False):
+        import json as _json
+        sep_id = _json.loads((bin_dir / "meta.json").read_text())["sep_id"]
     train_loader = build_ar_loader(bin_dir / "train.bin", seq_len, micro,
                                    shuffle=True, num_workers=cfg.data.num_workers,
                                    distributed=ddp, seed=cfg.seed,
-                                   limit_pairs=cfg.data.limit_windows)
+                                   limit_pairs=cfg.data.limit_windows,
+                                   sep_id=sep_id,
+                                   doc_aware=getattr(cfg.planner, "doc_aware", False))
     sampler = train_loader.sampler if ddp else None
     val_loader = (build_ar_loader(bin_dir / "val.bin", seq_len, micro, shuffle=False,
                                   num_workers=2) if is_main else None)
 
     def infinite():
-        epoch = 0
+        # start_step-seeded: resumes draw a fresh permutation (review finding)
+        epoch = start_step
         while True:
             if sampler is not None:
                 sampler.set_epoch(epoch)

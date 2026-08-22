@@ -250,3 +250,31 @@ def test_collate_right_pads_and_masks():
     assert out["prompt_mask"].tolist() == [[True] * 3 + [False] * 4, [True] * 7]
     assert out["codes"].shape == (2, 5)
     assert out["index"].tolist() == [0, 4]
+
+
+def test_ar_pairs_doc_aware_matches_planner_filter(tmp_path):
+    import numpy as np
+    from data.planner_data import ARPairs, PlannerPairs
+
+    SEP, L = 9999, 8
+    rng = np.random.default_rng(3)
+    stream = []
+    for n in rng.integers(4, 30, size=60):
+        stream.extend(rng.integers(0, 100, size=int(n)).tolist())
+        stream.append(SEP)
+    arr = np.array(stream, dtype=np.uint16)
+    bin_path = tmp_path / "train.bin"
+    arr.tofile(bin_path)
+    n_windows = len(arr) // L
+    codes = np.zeros((n_windows, 5), dtype=np.int16)
+    codes_path = tmp_path / "codes.npy"
+    np.save(codes_path, codes)
+
+    ar = ARPairs(bin_path, L, sep_id=SEP, doc_aware=True)
+    pl = PlannerPairs(bin_path, codes_path, L, sep_id=SEP, doc_aware=True)
+    assert np.array_equal(ar.pair_idx, pl.pair_idx)
+    # every kept AR pair span is separator-free
+    for j in range(len(ar)):
+        i = ar[j]["index"]
+        span = arr[i * L:(i + 2) * L]
+        assert (span != SEP).all()

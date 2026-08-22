@@ -1,0 +1,34 @@
+# Matched AR baseline for the v2 planner: same trunk dims (20L x 1024),
+# same corpus (owt9), same doc-aware pair filtering, same step budget.
+run_name: ar_owt9
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 256             # per window; training sequences are 2x this
+  d_model: 1024
+  decoder: {num_layers: 20, num_heads: 16, ffn_mult: 4}
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/owt9_gpt2
+  num_workers: 4
+planner:
+  codes_dir: /tmp/cadence_local/data/codes_owt9
+  tokenizer_run_dir: /tmp/cadence_local/runs/vqvae_owt_gpt2hybrid
+  doc_aware: true
+train:
+  max_steps: 150000
+  batch_size: 256
+  micro_batch_size: 16
+  lr: 2.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 2000
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  bf16: true
+  log_interval: 50
+  eval_interval: 2000
+  eval_batches: 30
+  save_interval: 4000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

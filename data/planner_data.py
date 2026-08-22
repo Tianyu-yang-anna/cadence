@@ -134,20 +134,35 @@ def make_planner_collate(pad_id: int):
 
 
 class ARPairs(Dataset):
-    """AR-baseline pairs: [window t || window t+1] token ids (2*seq_len)."""
+    """AR-baseline pairs: [window t || window t+1] token ids (2*seq_len).
 
-    def __init__(self, bin_path: str | Path, seq_len: int, limit_pairs: int = 0):
+    doc_aware mirrors PlannerPairs: drop pairs whose 2*seq_len span crosses a
+    document boundary (a fair planner-vs-AR comparison needs the same fix)."""
+
+    def __init__(self, bin_path: str | Path, seq_len: int, limit_pairs: int = 0,
+                 sep_id: int | None = None, doc_aware: bool = False):
         self.windows = WindowBinDataset(bin_path, seq_len)
         n = len(self.windows) - 1
         if limit_pairs > 0:
             n = min(n, limit_pairs)
         self.n = n
         self.seq_len = seq_len
+        self.pair_idx = None
+        if doc_aware:
+            assert sep_id is not None, "doc_aware requires sep_id"
+            arr = np.memmap(bin_path, dtype=np.uint16, mode="r")
+            seps = np.flatnonzero(arr == sep_id)
+            bounds = np.arange(n + 2, dtype=np.int64) * seq_len
+            seps_before = np.searchsorted(seps, bounds)
+            win_has_sep = (seps_before[1:] - seps_before[:-1]) > 0
+            self.pair_idx = np.flatnonzero(~(win_has_sep[:-1] | win_has_sep[1:]))
+            assert self.pair_idx.size > 0, "doc_aware filtered out every pair"
 
     def __len__(self):
-        return self.n
+        return self.n if self.pair_idx is None else int(self.pair_idx.size)
 
-    def __getitem__(self, i):
+    def __getitem__(self, j):
+        i = j if self.pair_idx is None else int(self.pair_idx[j])
         a = self.windows[i]["input_ids"]
         b = self.windows[i + 1]["input_ids"]
         return {"input_ids": torch.cat([a, b]), "index": i}
@@ -190,8 +205,9 @@ class ARPlanPairs(Dataset):
 
 
 def build_ar_loader(bin_path, seq_len, batch_size, shuffle, num_workers=4,
-                    distributed=False, seed=0, limit_pairs=0):
-    ds = ARPairs(bin_path, seq_len, limit_pairs)
+                    distributed=False, seed=0, limit_pairs=0,
+                    sep_id=None, doc_aware=False):
+    ds = ARPairs(bin_path, seq_len, limit_pairs, sep_id=sep_id, doc_aware=doc_aware)
     sampler = None
     if distributed:
         sampler = DistributedSampler(ds, shuffle=shuffle, seed=seed, drop_last=shuffle)
