@@ -239,3 +239,29 @@ from Track 1 val selection): full table + paper comparison in
 - Caveats: re-drawn sample sets, different tokenizer (GPT-2 vs Qwen3),
   256-token windows vs 1024 native, far less training compute (100k steps
   vs TextLDM DiT 2M).
+
+## Results round 7: diagnostic wave + free quality wins (2026-08-22)
+
+Four decision-critical results, one day, existing checkpoints only:
+1. **Cross-document pair contamination measured** (results/paircheck/): OWT
+   train pairs cross doc boundaries **40.1%** (22.4% inside the target window
+   — actively teaches "continuation unrelated to prompt"); WT103 12.8%.
+   Doc-aware pairing is now mandatory for the scale-up retrain.
+2. **Mid-scales are informative, not tokenizer noise** (scale-info probe,
+   hybrid): randomizing q16/q32/q64 codes costs 17/24/31pp reconstruction
+   (q128/q256: 41pp) — far above the 15pp "informative" threshold. Quantizer
+   structure stays; near-max mid-scale planner CE = genuine entropy +
+   contamination-diluted conditioning. Coarse codebooks underused (q1: 0.7%).
+3. **Per-scale sampling schedule ("hotcoarse"): val MAUVE 0.33 -> 0.80**,
+   zero training. T=[1.2,1.1,1.0,0.9,0.7,0.4,0.1], top_p=[.98,.95,.9,.9,.8,
+   .6,.4], CFG=[3,3,3,3,3,2,1.5]. Benchmarks rerun with it improve on every
+   metric of all four: Wikipedia MAUVE 15.1->21.0 (best-in-table extended,
+   TextLDM best 10.5), R1 24.3->25.6 (above pretrained GPT-2-137M);
+   WikiSource MAUVE 8.4->10.9, R2 3.5->4.2. New inference default.
+4. **Plan-conditioned AR: coarse plan is worth 1.36 bits/token** — AR with
+   the target window's q1-q32 (57 codes) as prefix reaches val CE 3.09
+   bits/token vs 4.45 for the matched plan-free control (12k steps each).
+   First causal proof the hierarchy carries usable generation signal;
+   go-signal for a plan-then-write hybrid architecture.
+Also: decoder denoising finetune mid-run curves healthy (dirty-code acc
+92.4% while clean stays 99.6%); full 9.5B-token OWT corpus prepped.

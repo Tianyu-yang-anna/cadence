@@ -1,0 +1,41 @@
+{
+  "bin_dir": "/tmp/cadence_local/data/owt_gpt2",
+  "sep_id": 50256,
+  "seq_len": 256,
+  "tokenizer": "gpt2",
+  "splits": {
+    "train": {
+      "n_tokens": 4000472051,
+      "n_docs": 3544576,
+      "doc_len_mean": 1128.6177163693815,
+      "doc_len_median": 719.0,
+      "n_pairs": 15626842,
+      "pair_crosses_boundary": 0.4014429146976721,
+      "boundary_in_prompt_window": 0.2236405794593687,
+      "boundary_in_target_window": 0.2236405794593687,
+      "clean_pairs": 0.5985570853023279
+    },
+    "val": {
+      "n_tokens": 3539311,
+      "n_docs": 3072,
+      "doc_len_mean": 1152.098013676327,
+      "doc_len_median": 712.0,
+      "n_pairs": 13824,
+      "pair_crosses_boundary": 0.3931568287037037,
+      "boundary_in_prompt_window": 0.21889467592592593,
+      "boundary_in_target_window": 0.21889467592592593,
+      "clean_pairs": 0.6068431712962963
+    },
+    "test": {
+      "n_tokens": 3297429,
+      "n_docs": 3072,
+      "doc_len_mean": 1073.4816020840117,
+      "doc_len_median": 713.0,
+      "n_pairs": 12879,
+      "pair_crosses_boundary": 0.4216942309185496,
+      "boundary_in_prompt_window": 0.2349561301343272,
+      "boundary_in_target_window": 0.2349561301343272,
+      "clean_pairs": 0.5783057690814504
+    }
+  }
+}

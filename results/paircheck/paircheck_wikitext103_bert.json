@@ -1,0 +1,41 @@
+{
+  "bin_dir": "/tmp/cadence_local/data/wikitext103_bert",
+  "sep_id": 102,
+  "seq_len": 256,
+  "tokenizer": "bert-base-uncased",
+  "splits": {
+    "train": {
+      "n_tokens": 113944536,
+      "n_docs": 28472,
+      "doc_len_mean": 4001.9740788872887,
+      "doc_len_median": 2994.0,
+      "n_pairs": 445094,
+      "pair_crosses_boundary": 0.1278246842240066,
+      "boundary_in_prompt_window": 0.06396176987333013,
+      "boundary_in_target_window": 0.06396176987333013,
+      "clean_pairs": 0.8721753157759934
+    },
+    "val": {
+      "n_tokens": 238716,
+      "n_docs": 60,
+      "doc_len_mean": 4012.7966101694915,
+      "doc_len_median": 3110.0,
+      "n_pairs": 931,
+      "pair_crosses_boundary": 0.1267454350161117,
+      "boundary_in_prompt_window": 0.06337271750805586,
+      "boundary_in_target_window": 0.06337271750805586,
+      "clean_pairs": 0.8732545649838883
+    },
+    "test": {
+      "n_tokens": 273238,
+      "n_docs": 60,
+      "doc_len_mean": 4610.559322033899,
+      "doc_len_median": 2974.0,
+      "n_pairs": 1066,
+      "pair_crosses_boundary": 0.11069418386491557,
+      "boundary_in_prompt_window": 0.055347091932457786,
+      "boundary_in_target_window": 0.055347091932457786,
+      "clean_pairs": 0.8893058161350844
+    }
+  }
+}

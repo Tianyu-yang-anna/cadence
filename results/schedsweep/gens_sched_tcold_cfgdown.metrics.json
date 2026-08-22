@@ -1,0 +1,11 @@
+{
+  "gen_file": "/tmp/cadence_local/schedsweep/gens_sched_tcold_cfgdown.jsonl",
+  "n": 300,
+  "rouge1": 0.2911585614973963,
+  "rouge2": 0.03653590260110584,
+  "rougeL": 0.13553966179737015,
+  "distinct1": 0.23590291333652535,
+  "distinct2": 0.7720084441316988,
+  "ref_distinct2": 0.7509840076593028,
+  "mauve": 0.5978489977951543
+}

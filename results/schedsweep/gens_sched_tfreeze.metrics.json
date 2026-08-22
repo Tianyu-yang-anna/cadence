@@ -1,0 +1,11 @@
+{
+  "gen_file": "/tmp/cadence_local/schedsweep/gens_sched_tfreeze.jsonl",
+  "n": 300,
+  "rouge1": 0.2911217549403464,
+  "rouge2": 0.03662354503852669,
+  "rougeL": 0.13624030788248132,
+  "distinct1": 0.22929665866715895,
+  "distinct2": 0.7614999071839614,
+  "ref_distinct2": 0.7509840076593028,
+  "mauve": 0.6970241950391984
+}
