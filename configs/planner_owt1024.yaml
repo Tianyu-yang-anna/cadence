@@ -1,0 +1,42 @@
+# 1024-window planner over the vqvae_owt9_1024_d5 tokenizer (11 scales, 2047
+# codes/window). doc_mode "target": at 1024 most (t, t+1) spans cross a doc
+# boundary, so we keep clean-TARGET pairs and truncate the prompt to the
+# same-document tail of window t (short prompts are in-distribution via
+# prompt_mixed). history off: one full window already fills the gpt2
+# encoder's 1024-token context.
+run_name: planner_owt1024
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 1024
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/owt9_gpt2
+  num_workers: 4
+planner:
+  d_model: 1024
+  n_layers: 20
+  n_heads: 16
+  ffn_mult: 4
+  cond_drop_p: 0.1
+  prompt_encoder: gpt2
+  tokenizer_run_dir: /tmp/cadence_local/runs/vqvae_owt9_1024_d5
+  codes_dir: /tmp/cadence_local/data/codes_owt9_1024
+  doc_aware: true
+  doc_mode: target
+  prompt_mixed: true
+  history_max: 0
+train:
+  max_steps: 150000
+  batch_size: 256
+  micro_batch_size: 4             # 2048-code sequences + up to 1024-token prompts
+  lr: 2.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 2000
+  bf16: true
+  log_interval: 50
+  eval_interval: 2000
+  eval_batches: 20
+  save_interval: 4000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

@@ -278,3 +278,40 @@ def test_ar_pairs_doc_aware_matches_planner_filter(tmp_path):
         i = ar[j]["index"]
         span = arr[i * L:(i + 2) * L]
         assert (span != SEP).all()
+
+
+def test_target_mode_keeps_clean_targets_and_truncates_prompt(tmp_path):
+    import numpy as np
+    from data.planner_data import PlannerPairs
+
+    SEP, L = 9999, 8
+    rng = np.random.default_rng(11)
+    stream = []
+    for n in rng.integers(3, 40, size=80):
+        stream.extend(rng.integers(0, 100, size=int(n)).tolist())
+        stream.append(SEP)
+    arr = np.array(stream, dtype=np.uint16)
+    bin_path = tmp_path / "train.bin"
+    arr.tofile(bin_path)
+    n_windows = len(arr) // L
+    np.save(tmp_path / "codes.npy", np.zeros((n_windows, 5), dtype=np.int16))
+
+    ds = PlannerPairs(bin_path, tmp_path / "codes.npy", L, sep_id=SEP,
+                      doc_aware=True, doc_mode="target", min_prompt=2)
+    pair_ds = PlannerPairs(bin_path, tmp_path / "codes.npy", L, sep_id=SEP,
+                           doc_aware=True, doc_mode="pair")
+    # target mode keeps at least everything pair mode keeps
+    assert set(pair_ds.pair_idx.tolist()) <= set(ds.pair_idx.tolist())
+    for j in range(len(ds)):
+        item = ds[j]
+        i = item["index"]
+        target = arr[(i + 1) * L:(i + 2) * L]
+        assert (target != SEP).all()                    # target always clean
+        p = item["prompt_ids"].numpy()
+        assert p.shape[0] >= 2
+        assert (p != SEP).all()                         # prompt never crosses
+        # prompt equals the same-document tail of window t
+        win = arr[i * L:(i + 1) * L]
+        sep_pos = np.flatnonzero(win == SEP)
+        tail = win[sep_pos[-1] + 1:] if sep_pos.size else win
+        assert np.array_equal(p, tail[-p.shape[0]:].astype(np.int64))

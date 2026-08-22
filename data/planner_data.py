@@ -40,8 +40,9 @@ class PlannerPairs(Dataset):
     def __init__(self, bin_path: str | Path, codes_path: str | Path,
                  seq_len: int, limit_pairs: int = 0,
                  sep_id: int | None = None, doc_aware: bool = False,
+                 doc_mode: str = "pair",
                  prompt_len_cfg: dict | None = None, history_max: int = 0,
-                 pad_id: int = 0, rng_seed: int = 0):
+                 pad_id: int = 0, rng_seed: int = 0, min_prompt: int = 4):
         self.windows = WindowBinDataset(bin_path, seq_len)
         self.codes = np.load(codes_path, mmap_mode="r")
         self.seq_len = seq_len
@@ -60,19 +61,40 @@ class PlannerPairs(Dataset):
         self.prompt_len_cfg = (None if prompt_len_cfg is None
                                else {**PROMPT_LEN_DEFAULTS, **prompt_len_cfg})
 
+        assert doc_mode in ("pair", "target")
+        self.doc_mode = doc_mode
         self.pair_idx = None            # None = identity (all pairs kept)
         self.win_has_sep = None
+        self.suffix_len = None          # target mode: same-doc tail of window t
         if doc_aware:
             assert sep_id is not None, "doc_aware requires sep_id"
-            # vectorized scan, same math as check_pair_boundaries.split_stats:
-            # pair i is kept iff [i*L, (i+2)*L) contains no separator
+            # vectorized scan, same math as check_pair_boundaries.split_stats
             arr = np.memmap(bin_path, dtype=np.uint16, mode="r")
             seps = np.flatnonzero(arr == sep_id)
             bounds = np.arange(n + 2, dtype=np.int64) * seq_len
             seps_before = np.searchsorted(seps, bounds)
             self.win_has_sep = (seps_before[1:] - seps_before[:-1]) > 0  # [n+1]
-            crosses = self.win_has_sep[:-1] | self.win_has_sep[1:]       # [n]
-            self.pair_idx = np.flatnonzero(~crosses)
+            if doc_mode == "pair":
+                # pair i kept iff [i*L, (i+2)*L) contains no separator
+                crosses = self.win_has_sep[:-1] | self.win_has_sep[1:]   # [n]
+                self.pair_idx = np.flatnonzero(~crosses)
+            else:
+                # "target": target window must be clean; the prompt is the
+                # same-document TAIL of window t (long windows would otherwise
+                # filter out most pairs — at 1024 most spans cross a doc).
+                # suffix_len[i] = tokens of window i after its last separator
+                if seps.size:
+                    idx = np.searchsorted(seps, bounds[1:n + 1]) - 1
+                    valid = idx >= 0            # a -1 index would wrap around
+                    last_sep = np.where(valid, seps[np.clip(idx, 0, None)], -1)
+                    in_win = valid & (last_sep >= bounds[:n])
+                    suffix = np.where(in_win, bounds[1:n + 1] - last_sep - 1,
+                                      np.int64(seq_len))
+                else:
+                    suffix = np.full(n, seq_len, dtype=np.int64)
+                self.suffix_len = suffix                                  # [n]
+                keep = (~self.win_has_sep[1:n + 1]) & (suffix >= min_prompt)
+                self.pair_idx = np.flatnonzero(keep)
             assert self.pair_idx.size > 0, "doc_aware filtered out every pair"
 
     def __len__(self):
@@ -95,15 +117,21 @@ class PlannerPairs(Dataset):
         prompt = self.windows[i]["input_ids"]                       # window t
         codes = torch.from_numpy(
             np.asarray(self.codes[i + 1], dtype=np.int64))          # window t+1
+        avail = self.seq_len                    # same-document tail of window t
+        if self.suffix_len is not None:
+            avail = int(self.suffix_len[i])
+            prompt = prompt[-avail:]
         if self.prompt_len_cfg is not None or self.history_max > 0:
             rng = random.Random(self.rng_seed * 1_000_000_000 + i)
             plen = (self._prompt_len(rng) if self.prompt_len_cfg is not None
                     else self.seq_len)
+            plen = min(plen, avail)
             prompt = prompt[-plen:]                       # SUFFIX of window t
-            # history only when window t is kept WHOLE: prepending full windows
-            # onto a suffix would put an unmarked token gap mid-prompt — a text
-            # distribution that never occurs at inference (review finding)
-            if self.history_max > 0 and plen == self.seq_len:
+            # history only when window t is kept WHOLE and separator-free:
+            # prepending full windows onto a suffix would put an unmarked
+            # token gap mid-prompt (review finding)
+            if (self.history_max > 0 and plen == self.seq_len
+                    and not self.win_has_sep[i]):
                 # windows t-h..t-1, truncated to same-document (no separator)
                 h = rng.randint(0, self.history_max)
                 while h > 0 and (i - h < 0 or self.win_has_sep[i - h:i].any()):
@@ -236,16 +264,18 @@ def build_ar_plan_loader(bin_path, codes_path, seq_len, batch_size, shuffle,
 
 def build_pair_loader(bin_path, codes_path, seq_len, batch_size, shuffle,
                       num_workers=4, distributed=False, seed=0, limit_pairs=0,
-                      sep_id=None, doc_aware=False, prompt_len_cfg=None,
-                      history_max=0, pad_id=0, rng_seed=0):
+                      sep_id=None, doc_aware=False, doc_mode="pair",
+                      prompt_len_cfg=None, history_max=0, pad_id=0, rng_seed=0):
     ds = PlannerPairs(bin_path, codes_path, seq_len, limit_pairs,
-                      sep_id=sep_id, doc_aware=doc_aware,
+                      sep_id=sep_id, doc_aware=doc_aware, doc_mode=doc_mode,
                       prompt_len_cfg=prompt_len_cfg, history_max=history_max,
                       pad_id=pad_id, rng_seed=rng_seed)
     # variable-length prompts need the padding collate; the legacy fixed-256
-    # path keeps the default collate (byte-identical batches)
+    # path keeps the default collate (byte-identical batches). target-mode
+    # doc filtering truncates prompts to same-document tails -> also variable.
     collate = (make_planner_collate(pad_id)
-               if prompt_len_cfg is not None or history_max > 0 else None)
+               if prompt_len_cfg is not None or history_max > 0
+               or (doc_aware and doc_mode == "target") else None)
     sampler = None
     if distributed:
         sampler = DistributedSampler(ds, shuffle=shuffle, seed=seed, drop_last=shuffle)
