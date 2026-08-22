@@ -57,9 +57,61 @@ class ARPairs(Dataset):
         return {"input_ids": torch.cat([a, b]), "index": i}
 
 
+class ARPlanPairs(Dataset):
+    """Plan-conditioned AR pairs: [window t || window t+1] token ids
+    (2*seq_len) plus the TARGET window t+1's coarse plan codes. Codes npy
+    rows are the full flattened ladder for one window, stored coarse-to-fine
+    in ascending scale order (dump_codes.py concatenates msrvq per-scale
+    codes in schedule order), so the plan is the leading sum(plan_scales)
+    entries (57 for scales [1,8,16,32])."""
+
+    def __init__(self, bin_path: str | Path, codes_path: str | Path,
+                 seq_len: int, plan_scales=(1, 8, 16, 32),
+                 scales=(1, 8, 16, 32, 64, 128, 256), limit_pairs: int = 0):
+        assert list(plan_scales) == list(scales)[:len(plan_scales)], \
+            "plan_scales must be a leading prefix of the ladder"
+        self.windows = WindowBinDataset(bin_path, seq_len)
+        self.codes = np.load(codes_path, mmap_mode="r")
+        assert self.codes.shape[1] == sum(scales), \
+            f"codes rows have {self.codes.shape[1]} entries, ladder sums to {sum(scales)}"
+        self.plan_len = sum(plan_scales)
+        self.seq_len = seq_len
+        n = min(len(self.windows), self.codes.shape[0]) - 1
+        if limit_pairs > 0:
+            n = min(n, limit_pairs)
+        assert n > 0, "not enough windows for pairs"
+        self.n = n
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, i):
+        a = self.windows[i]["input_ids"]                            # window t
+        b = self.windows[i + 1]["input_ids"]                        # window t+1
+        plan = torch.from_numpy(np.asarray(
+            self.codes[i + 1][:self.plan_len], dtype=np.int64))     # target's plan
+        return {"input_ids": torch.cat([a, b]), "plan_codes": plan, "index": i}
+
+
 def build_ar_loader(bin_path, seq_len, batch_size, shuffle, num_workers=4,
                     distributed=False, seed=0, limit_pairs=0):
     ds = ARPairs(bin_path, seq_len, limit_pairs)
+    sampler = None
+    if distributed:
+        sampler = DistributedSampler(ds, shuffle=shuffle, seed=seed, drop_last=shuffle)
+        shuffle = False
+    generator = torch.Generator().manual_seed(seed) if shuffle else None
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, sampler=sampler,
+                      num_workers=num_workers, pin_memory=torch.cuda.is_available(),
+                      drop_last=sampler is not None or shuffle, generator=generator)
+
+
+def build_ar_plan_loader(bin_path, codes_path, seq_len, batch_size, shuffle,
+                         num_workers=4, distributed=False, seed=0, limit_pairs=0,
+                         plan_scales=(1, 8, 16, 32),
+                         scales=(1, 8, 16, 32, 64, 128, 256)):
+    ds = ARPlanPairs(bin_path, codes_path, seq_len, plan_scales=plan_scales,
+                     scales=scales, limit_pairs=limit_pairs)
     sampler = None
     if distributed:
         sampler = DistributedSampler(ds, shuffle=shuffle, seed=seed, drop_last=shuffle)

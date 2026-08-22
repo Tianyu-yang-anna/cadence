@@ -1,0 +1,41 @@
+# Plan-conditioned AR: decoder-only causal LM on [window t || window t+1]
+# with the TARGET window's ground-truth coarse plan codes (scales [1,8,16,32]
+# = 57 codes) prepended as a conditioning prefix; loss on the continuation
+# half. Matched control: ar_wt103_es12k (plan-free baseline, val optimum at
+# 12k steps) — same model size/lr, max_steps 12000.
+run_name: ar_plan_wt103
+seed: 42
+model:
+  vocab_size: 30522
+  seq_len: 256             # per window; training sequences are 2x this
+  d_model: 768
+  decoder: {num_layers: 12, num_heads: 12, ffn_mult: 4}
+quantizer:
+  # frozen tokenizer's ladder (hybrid run); codebook_size sizes the plan embedding
+  scales: [1, 8, 16, 32, 64, 128, 256]
+  codebook_size: 8192
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/wikitext103_bert
+  num_workers: 4
+planner:
+  codes_dir: /tmp/cadence_local/data/codes_hybrid
+  tokenizer_run_dir: /tmp/cadence_local/runs/vqvae_wt103_hybrid
+  plan_scales: [1, 8, 16, 32]   # leading prefix of quantizer.scales; sum = 57
+train:
+  max_steps: 12000
+  batch_size: 256
+  micro_batch_size: 32
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 2000
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  bf16: true
+  log_interval: 50
+  eval_interval: 1000
+  eval_batches: 30
+  save_interval: 2000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

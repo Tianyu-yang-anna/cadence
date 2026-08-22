@@ -113,6 +113,9 @@ class PlannerConfig:
     prompt_encoder: str = "bert-base-uncased"
     tokenizer_run_dir: str = ""     # dir containing the frozen tokenizer ckpt
     codes_dir: str = ""             # dir with codes_{split}.npy from dump_codes
+    # coarse prefix of the ladder used as the plan-conditioned AR prefix
+    # (train_ar_plan.py); must be a leading prefix of quantizer.scales
+    plan_scales: list[int] = field(default_factory=lambda: [1, 8, 16, 32])
 
 
 @dataclass
