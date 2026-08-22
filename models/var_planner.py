@@ -256,14 +256,36 @@ class VARPlanner(nn.Module):
     # ------------------------------------------------------------ inference
 
     @torch.no_grad()
-    def generate(self, prompt_feats: torch.Tensor, temperature: float = 1.0,
-                 top_k: int = 0, top_p: float = 0.0, cfg_scale: float = 1.0,
-                 generator: torch.Generator | None = None) -> torch.Tensor:
-        """Next-scale sampling; K forwards. Returns codes [B, sum(scales)]."""
+    def generate(self, prompt_feats: torch.Tensor,
+                 temperature: float | list[float] = 1.0,
+                 top_k: int | list[int] = 0,
+                 top_p: float | list[float] = 0.0,
+                 cfg_scale: float | list[float] = 1.0,
+                 generator: torch.Generator | None = None,
+                 forced_codes: torch.Tensor | None = None,
+                 forced_scales: list[int] | None = None) -> torch.Tensor:
+        """Next-scale sampling; K forwards. Returns codes [B, sum(scales)].
+
+        temperature/top_k/top_p/cfg_scale accept a scalar (applied to every
+        scale) or a per-scale list (len == num scales). forced_scales lists
+        scale INDICES whose codes are taken from forced_codes (a full
+        [B, sum(scales)] ladder, e.g. ground truth) instead of sampled —
+        used for oracle-prefix / oracle-suffix attribution runs.
+        """
         B = prompt_feats.shape[0]
         device = prompt_feats.device
         d = self.codebook.shape[1]
-        use_cfg = cfg_scale != 1.0
+        K = len(self.scales)
+        temps = _per_scale(temperature, K, "temperature")
+        top_ks = [int(v) for v in _per_scale(top_k, K, "top_k")]
+        top_ps = _per_scale(top_p, K, "top_p")
+        cfgs = _per_scale(cfg_scale, K, "cfg_scale")
+        forced = set(forced_scales or [])
+        if forced:
+            assert forced_codes is not None and \
+                forced_codes.shape[1] == sum(self.scales), \
+                "forced_scales requires forced_codes [B, sum(scales)]"
+        use_cfg = any(c != 1.0 for k, c in enumerate(cfgs) if k not in forced)
 
         start_c = self._pooled_start(prompt_feats)
         ctx_c = prompt_feats
@@ -283,18 +305,21 @@ class VARPlanner(nn.Module):
                     blk_in = F.adaptive_avg_pool1d(
                         f_hat.transpose(1, 2), l).transpose(1, 2)
                 maps_so_far.append(blk_in)
-            maps = (torch.cat(maps_so_far, dim=1) if maps_so_far
-                    else torch.zeros(B, 0, d, device=device))
-            # run the prefix of the sequence up to and including block k
-            L_pref = sum(self.scales[:k + 1])
-            x_c = self._assemble(maps, start_c)[:, :L_pref]
-            logits = self._trunk_prefix(x_c, ctx_c, L_pref)
-            if use_cfg:
-                x_u = self._assemble(maps, start_u)[:, :L_pref]
-                logits_u = self._trunk_prefix(x_u, ctx_u, L_pref)
-                logits = logits_u + cfg_scale * (logits - logits_u)
-            blk_logits = logits[:, seg_start:seg_start + l] / max(temperature, 1e-6)
-            codes_k = _sample(blk_logits, top_k, top_p, generator)  # [B, l]
+            if k in forced:
+                codes_k = forced_codes[:, seg_start:seg_start + l].to(device).long()
+            else:
+                maps = (torch.cat(maps_so_far, dim=1) if maps_so_far
+                        else torch.zeros(B, 0, d, device=device))
+                # run the prefix of the sequence up to and including block k
+                L_pref = sum(self.scales[:k + 1])
+                x_c = self._assemble(maps, start_c)[:, :L_pref]
+                logits = self._trunk_prefix(x_c, ctx_c, L_pref)
+                if cfgs[k] != 1.0:
+                    x_u = self._assemble(maps, start_u)[:, :L_pref]
+                    logits_u = self._trunk_prefix(x_u, ctx_u, L_pref)
+                    logits = logits_u + cfgs[k] * (logits - logits_u)
+                blk_logits = logits[:, seg_start:seg_start + l] / max(temps[k], 1e-6)
+                codes_k = _sample(blk_logits, top_ks[k], top_ps[k], generator)  # [B, l]
             codes_out.append(codes_k)
             e = self.codebook[codes_k]
             if l == self.seq_len:
@@ -313,6 +338,15 @@ class VARPlanner(nn.Module):
         for blk in self.blocks:
             x = blk(x, positions, mask, ctx)
         return self.head(self.ln_f(x))
+
+
+def _per_scale(v, K: int, name: str) -> list[float]:
+    """Normalize a scalar or per-scale sequence into a length-K float list."""
+    if isinstance(v, (int, float)):
+        return [float(v)] * K
+    out = [float(x) for x in v]
+    assert len(out) == K, f"{name} schedule has {len(out)} entries, expected {K}"
+    return out
 
 
 def _sample(logits: torch.Tensor, top_k: int, top_p: float,

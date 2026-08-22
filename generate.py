@@ -117,6 +117,14 @@ def main():
     ap.add_argument("--top_k", type=int, default=0)
     ap.add_argument("--top_p", type=float, default=0.95)
     ap.add_argument("--cfg", type=float, default=1.0)
+    ap.add_argument("--temp_schedule", default="",
+                    help="per-scale comma list overriding --temperature")
+    ap.add_argument("--topk_schedule", default="")
+    ap.add_argument("--topp_schedule", default="")
+    ap.add_argument("--cfg_schedule", default="")
+    ap.add_argument("--oracle_scales", default="",
+                    help="comma list of scale INDICES forced to ground-truth "
+                         "codes (attribution runs; planner backend, window mode)")
     ap.add_argument("--chain", type=int, default=1, help="windows to chain")
     ap.add_argument("--benchmark", default="",
                     help="free-text benchmark jsonl {prompt, reference}; "
@@ -127,6 +135,22 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+
+    def _sched(s, cast, scalar):
+        return [cast(x) for x in s.split(",")] if s else scalar
+    temp_arg = _sched(args.temp_schedule, float, args.temperature)
+    topk_arg = _sched(args.topk_schedule, int, args.top_k)
+    topp_arg = _sched(args.topp_schedule, float, args.top_p)
+    cfg_arg = _sched(args.cfg_schedule, float, args.cfg)
+    oracle_scales = ([int(x) for x in args.oracle_scales.split(",")]
+                     if args.oracle_scales else None)
+    if oracle_scales is not None:
+        assert args.backend == "planner" and args.chain == 1, \
+            "--oracle_scales: planner backend with chain=1 only"
+    if args.backend != "planner":
+        assert not (args.temp_schedule or args.topk_schedule or
+                    args.topp_schedule or args.cfg_schedule), \
+            "per-scale schedules apply to the planner backend only"
 
     cfg = load_config(args.config, args.sets)
     out_dir = resolved_out_dir(cfg)
@@ -185,19 +209,21 @@ def main():
             return (torch.autocast(device_type=device.type, dtype=autocast_dtype)
                     if autocast_dtype else _nc())
 
+        assert oracle_scales is None, "--oracle_scales needs window-mode GT codes"
+
         def gen_window(cur):
             with _ac():
                 feats = prompt_enc(cur)
-            codes = planner.generate(feats.float(), temperature=args.temperature,
-                                     top_k=args.top_k, top_p=args.top_p,
-                                     cfg_scale=args.cfg, generator=gen_rng)
+            codes = planner.generate(feats.float(), temperature=temp_arg,
+                                     top_k=topk_arg, top_p=topp_arg,
+                                     cfg_scale=cfg_arg, generator=gen_rng)
             return decode_codes(tokenizer_model, codes, scales, seq_len,
                                 tok_quant.upsample_mode, autocast_dtype)
 
         rows = [json.loads(l)
                 for l in Path(args.benchmark).read_text().splitlines()][: args.n]
         log_line(f"benchmark {args.benchmark}: {len(rows)} rows "
-                 f"(T={args.temperature}, top_p={args.top_p}, cfg={args.cfg})")
+                 f"(T={temp_arg}, top_p={topp_arg}, cfg={cfg_arg})")
         run_benchmark(rows, detok, gen_window, seq_len, args.out,
                       max_prompt_tokens=args.max_prompt_tokens,
                       chain_cap=args.chain_cap, device=device)
@@ -252,9 +278,11 @@ def main():
                     with ac():
                         feats = prompt_enc(cur_prompt)
                     codes = planner.generate(
-                        feats.float(), temperature=args.temperature,
-                        top_k=args.top_k, top_p=args.top_p,
-                        cfg_scale=args.cfg, generator=gen_rng)
+                        feats.float(), temperature=temp_arg,
+                        top_k=topk_arg, top_p=topp_arg,
+                        cfg_scale=cfg_arg, generator=gen_rng,
+                        forced_codes=ref_codes if oracle_scales else None,
+                        forced_scales=oracle_scales)
                     ids = decode_codes(tokenizer_model, codes, scales, seq_len,
                                        tok_quant.upsample_mode, autocast_dtype)
                     pieces.append(ids)
