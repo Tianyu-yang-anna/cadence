@@ -10,6 +10,9 @@ N="${N:-1000}"
 TEMP="${TEMP:-0.8}"
 TOPP="${TOPP:-0.9}"
 CFG_W="${CFG_W:-3.0}"
+TEMP_SCHEDULE="${TEMP_SCHEDULE:-}"   # per-scale comma lists; override scalars
+TOPP_SCHEDULE="${TOPP_SCHEDULE:-}"
+CFG_SCHEDULE="${CFG_SCHEDULE:-}"
 TAG="${TAG:-}"
 export DATA_NAME="${DATA_NAME:-owt_gpt2}"
 export TOKENIZER="${TOKENIZER:-gpt2}"
@@ -51,10 +54,14 @@ run_step() {
 }
 
 for b in $BENCHMARKS; do
+  SCHED=""
+  [ -n "$TEMP_SCHEDULE" ] && SCHED="$SCHED --temp_schedule $TEMP_SCHEDULE"
+  [ -n "$TOPP_SCHEDULE" ] && SCHED="$SCHED --topp_schedule $TOPP_SCHEDULE"
+  [ -n "$CFG_SCHEDULE" ] && SCHED="$SCHED --cfg_schedule $CFG_SCHEDULE"
   run_step "generate $b" bash -c \
     "cd '$CODE' && '$PY' generate.py --backend planner --config '$CONFIG' \
       --set 'run_name=$PLANNER_FULL' --benchmark '$BDIR/$b.jsonl' --n '$N' \
-      --temperature '$TEMP' --top_p '$TOPP' --cfg '$CFG_W' \
+      --temperature '$TEMP' --top_p '$TOPP' --cfg '$CFG_W' $SCHED \
       --out '$OUT/gens_${b}${TAG}.jsonl'" \
     && run_step "eval $b" "$PY" "$CODE/eval_generation.py" \
         --gen "$OUT/gens_${b}${TAG}.jsonl"
