@@ -6,7 +6,9 @@ CONFIG="${CONFIG:-configs/planner_wt103.yaml}"
 CODES_NAME="${CODES_NAME:-codes_hybrid}"
 TOKENIZER_RUN="${TOKENIZER_RUN:-hybrid}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
-export JOB_TAG="planner-$RUN_NAME"
+# per-node log/heartbeat names: multi-node gangs otherwise overwrite
+# one shared file and mask the primary failing node
+export JOB_TAG="planner-$RUN_NAME${NODE_RANK:+-n$NODE_RANK}"
 source "$(dirname "${BASH_SOURCE[0]}")/bootstrap.sh"
 
 start_heartbeat
