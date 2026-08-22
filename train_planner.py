@@ -175,16 +175,26 @@ def main():
 
     bin_dir = Path(cfg.data.bin_dir)
     codes_dir = Path(cfg.planner.codes_dir)
+    pcfg = cfg.planner
+    sep_id, pad_id = None, 0
+    if pcfg.doc_aware or pcfg.prompt_mixed or pcfg.history_max > 0:
+        bin_meta = _json.loads((bin_dir / "meta.json").read_text())
+        sep_id = bin_meta["sep_id"]
+        pad_id = sep_id  # gpt2 has no pad token; pad with sep/eos (masked anyway)
+    pair_kwargs = dict(sep_id=sep_id, doc_aware=pcfg.doc_aware,
+                       prompt_len_cfg={} if pcfg.prompt_mixed else None,  # {} = defaults
+                       history_max=pcfg.history_max, pad_id=pad_id, rng_seed=cfg.seed)
     train_loader = build_pair_loader(bin_dir / "train.bin", codes_dir / "codes_train.npy",
                                      seq_len, micro, shuffle=True,
                                      num_workers=cfg.data.num_workers,
                                      distributed=ddp, seed=cfg.seed,
-                                     limit_pairs=cfg.data.limit_windows)
+                                     limit_pairs=cfg.data.limit_windows, **pair_kwargs)
     sampler = train_loader.sampler if ddp else None
     val_loader = None
     if is_main:
         val_loader = build_pair_loader(bin_dir / "val.bin", codes_dir / "codes_val.npy",
-                                       seq_len, micro, shuffle=False, num_workers=2)
+                                       seq_len, micro, shuffle=False, num_workers=2,
+                                       **pair_kwargs)
 
     def infinite():
         epoch = 0
@@ -206,11 +216,15 @@ def main():
             batch = next(train_iter)
             prompt = batch["prompt_ids"].to(device, non_blocking=True)
             codes = batch["codes"].to(device, non_blocking=True)
+            pmask = batch.get("prompt_mask")  # None on the legacy fixed-256 path
+            if pmask is not None:
+                pmask = pmask.to(device, non_blocking=True)
             sync_ctx = model.no_sync() if ddp and m < n_accum - 1 else nullcontext()
             with sync_ctx:
                 with ac():
-                    feats = prompt_enc(prompt)
-                    logits = model(codes, feats)
+                    feats = prompt_enc(prompt, attention_mask=(
+                        pmask.long() if pmask is not None else None))
+                    logits = model(codes, feats, prompt_mask=pmask)
                     loss = F.cross_entropy(
                         logits.float().reshape(-1, logits.shape[-1]),
                         codes.reshape(-1))
@@ -247,10 +261,15 @@ def main():
                         break
                     p = vb["prompt_ids"].to(device)
                     c = vb["codes"].to(device)
+                    vmask = vb.get("prompt_mask")
+                    if vmask is not None:
+                        vmask = vmask.to(device)
                     with ac():
-                        feats = prompt_enc(p)
+                        feats = prompt_enc(p, attention_mask=(
+                            vmask.long() if vmask is not None else None))
                         logits = raw(c, feats, cond_drop=torch.zeros(
-                            c.shape[0], dtype=torch.bool, device=device))
+                            c.shape[0], dtype=torch.bool, device=device),
+                            prompt_mask=vmask)
                     d = per_scale_ce_bits(logits, c, scales)
                     agg = d if agg is None else {k: agg[k] + d[k] for k in d}
                     n_b += 1

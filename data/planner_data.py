@@ -2,11 +2,27 @@
 scale codes). Prompt ids come straight from the tokenizer bins; codes are
 pre-extracted once with data/dump_codes.py (int16 npy per split).
 
-~6% of adjacent-window pairs straddle a document boundary — kept (identical
-to the generation-time reality of window chaining).
+Default (no kwargs): every adjacent pair is kept and the prompt is the full
+fixed-length window t — unchanged legacy behavior. On WT103 ~6% of pairs
+straddle a document boundary; on OWT it is 40.1% (measured with
+data/check_pair_boundaries.py), so scale-up runs enable:
+
+  doc_aware      drop every pair whose span [i*L, (i+2)*L) contains a
+                 separator token (contaminated conditioning);
+  prompt_len_cfg mixed-length prompts (suffix of window t) so short
+                 benchmark prompts are in-distribution;
+  history_max    prepend up to history_max same-document windows before
+                 window t (chained generation keeps history).
+
+Variable-length prompts need make_planner_collate(pad_id): RIGHT-pad to the
+batch max + a bool prompt_mask (True = real token). Right-padding + mask is
+the standard convention for BERT-style encoders; for a causal gpt2 encoder
+it is also fine since we take last_hidden_state and mask in the planner.
 """
 from __future__ import annotations
 
+import math
+import random
 from pathlib import Path
 
 import numpy as np
@@ -15,26 +31,102 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 from data.wikitext import WindowBinDataset
 
+# fallback for keys missing from a non-None prompt_len_cfg
+PROMPT_LEN_DEFAULTS = {"full_frac": 0.3, "short_frac": 0.1,
+                       "short_lo": 8, "short_hi": 24, "lo": 8}
+
 
 class PlannerPairs(Dataset):
     def __init__(self, bin_path: str | Path, codes_path: str | Path,
-                 seq_len: int, limit_pairs: int = 0):
+                 seq_len: int, limit_pairs: int = 0,
+                 sep_id: int | None = None, doc_aware: bool = False,
+                 prompt_len_cfg: dict | None = None, history_max: int = 0,
+                 pad_id: int = 0, rng_seed: int = 0):
         self.windows = WindowBinDataset(bin_path, seq_len)
         self.codes = np.load(codes_path, mmap_mode="r")
+        self.seq_len = seq_len
         n = min(len(self.windows), self.codes.shape[0]) - 1
         if limit_pairs > 0:
             n = min(n, limit_pairs)
         assert n > 0, "not enough windows for pairs"
         self.n = n
 
-    def __len__(self):
-        return self.n
+        assert history_max == 0 or doc_aware, \
+            "history_max > 0 requires doc_aware (same-document not guaranteed)"
+        self.doc_aware = doc_aware
+        self.history_max = history_max
+        self.pad_id = pad_id
+        self.rng_seed = rng_seed
+        self.prompt_len_cfg = (None if prompt_len_cfg is None
+                               else {**PROMPT_LEN_DEFAULTS, **prompt_len_cfg})
 
-    def __getitem__(self, i):
+        self.pair_idx = None            # None = identity (all pairs kept)
+        self.win_has_sep = None
+        if doc_aware:
+            assert sep_id is not None, "doc_aware requires sep_id"
+            # vectorized scan, same math as check_pair_boundaries.split_stats:
+            # pair i is kept iff [i*L, (i+2)*L) contains no separator
+            arr = np.memmap(bin_path, dtype=np.uint16, mode="r")
+            seps = np.flatnonzero(arr == sep_id)
+            bounds = np.arange(n + 2, dtype=np.int64) * seq_len
+            seps_before = np.searchsorted(seps, bounds)
+            self.win_has_sep = (seps_before[1:] - seps_before[:-1]) > 0  # [n+1]
+            crosses = self.win_has_sep[:-1] | self.win_has_sep[1:]       # [n]
+            self.pair_idx = np.flatnonzero(~crosses)
+            assert self.pair_idx.size > 0, "doc_aware filtered out every pair"
+
+    def __len__(self):
+        return self.n if self.pair_idx is None else int(self.pair_idx.size)
+
+    def _prompt_len(self, rng: random.Random) -> int:
+        """Mixed prompt lengths: full window / short / log-uniform."""
+        c = self.prompt_len_cfg
+        u = rng.random()
+        if u < c["full_frac"]:
+            return self.seq_len
+        if u < c["full_frac"] + c["short_frac"]:
+            return min(rng.randint(c["short_lo"], c["short_hi"]), self.seq_len)
+        k = int(round(math.exp(rng.uniform(math.log(c["lo"]),
+                                           math.log(self.seq_len)))))
+        return min(max(k, c["lo"]), self.seq_len)
+
+    def __getitem__(self, j):
+        i = j if self.pair_idx is None else int(self.pair_idx[j])
         prompt = self.windows[i]["input_ids"]                       # window t
         codes = torch.from_numpy(
             np.asarray(self.codes[i + 1], dtype=np.int64))          # window t+1
+        if self.prompt_len_cfg is not None or self.history_max > 0:
+            rng = random.Random(self.rng_seed * 1_000_000_000 + i)
+            if self.prompt_len_cfg is not None:
+                prompt = prompt[-self._prompt_len(rng):]  # SUFFIX of window t
+            if self.history_max > 0:
+                # windows t-h..t-1, truncated to same-document (no separator)
+                h = rng.randint(0, self.history_max)
+                while h > 0 and (i - h < 0 or self.win_has_sep[i - h:i].any()):
+                    h -= 1
+                if h > 0:
+                    hist = [self.windows[w]["input_ids"] for w in range(i - h, i)]
+                    prompt = torch.cat(hist + [prompt])
+            assert prompt.shape[0] <= (self.history_max + 1) * self.seq_len
         return {"prompt_ids": prompt, "codes": codes, "index": i}
+
+
+def make_planner_collate(pad_id: int):
+    """RIGHT-pad variable-length prompts to the batch max; prompt_mask [B, Lmax]
+    bool marks the real tokens. The prompt encoder is position-sensitive:
+    right-padding keeps every real token at its true position."""
+    def collate(batch):
+        prompts = [b["prompt_ids"] for b in batch]
+        l_max = max(p.shape[0] for p in prompts)
+        ids = torch.full((len(prompts), l_max), pad_id, dtype=torch.long)
+        mask = torch.zeros(len(prompts), l_max, dtype=torch.bool)
+        for j, p in enumerate(prompts):
+            ids[j, :p.shape[0]] = p
+            mask[j, :p.shape[0]] = True
+        return {"prompt_ids": ids, "prompt_mask": mask,
+                "codes": torch.stack([b["codes"] for b in batch]),
+                "index": torch.tensor([b["index"] for b in batch])}
+    return collate
 
 
 class ARPairs(Dataset):
@@ -123,8 +215,17 @@ def build_ar_plan_loader(bin_path, codes_path, seq_len, batch_size, shuffle,
 
 
 def build_pair_loader(bin_path, codes_path, seq_len, batch_size, shuffle,
-                      num_workers=4, distributed=False, seed=0, limit_pairs=0):
-    ds = PlannerPairs(bin_path, codes_path, seq_len, limit_pairs)
+                      num_workers=4, distributed=False, seed=0, limit_pairs=0,
+                      sep_id=None, doc_aware=False, prompt_len_cfg=None,
+                      history_max=0, pad_id=0, rng_seed=0):
+    ds = PlannerPairs(bin_path, codes_path, seq_len, limit_pairs,
+                      sep_id=sep_id, doc_aware=doc_aware,
+                      prompt_len_cfg=prompt_len_cfg, history_max=history_max,
+                      pad_id=pad_id, rng_seed=rng_seed)
+    # variable-length prompts need the padding collate; the legacy fixed-256
+    # path keeps the default collate (byte-identical batches)
+    collate = (make_planner_collate(pad_id)
+               if prompt_len_cfg is not None or history_max > 0 else None)
     sampler = None
     if distributed:
         sampler = DistributedSampler(ds, shuffle=shuffle, seed=seed, drop_last=shuffle)
@@ -132,4 +233,5 @@ def build_pair_loader(bin_path, codes_path, seq_len, batch_size, shuffle,
     generator = torch.Generator().manual_seed(seed) if shuffle else None
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, sampler=sampler,
                       num_workers=num_workers, pin_memory=torch.cuda.is_available(),
-                      drop_last=sampler is not None or shuffle, generator=generator)
+                      drop_last=sampler is not None or shuffle, generator=generator,
+                      collate_fn=collate)

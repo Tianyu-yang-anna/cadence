@@ -113,6 +113,10 @@ class PlannerConfig:
     prompt_encoder: str = "bert-base-uncased"
     tokenizer_run_dir: str = ""     # dir containing the frozen tokenizer ckpt
     codes_dir: str = ""             # dir with codes_{split}.npy from dump_codes
+    # scale-up data/conditioning fixes (data/planner_data.py):
+    doc_aware: bool = False         # drop pairs whose span crosses a doc boundary
+    prompt_mixed: bool = False      # mixed-length suffix prompts (defaults dict)
+    history_max: int = 0            # prepend up to N same-doc windows before t
     # coarse prefix of the ladder used as the plan-conditioned AR prefix
     # (train_ar_plan.py); must be a leading prefix of quantizer.scales
     plan_scales: list[int] = field(default_factory=lambda: [1, 8, 16, 32])

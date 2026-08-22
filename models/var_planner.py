@@ -122,13 +122,16 @@ class _CrossAttention(nn.Module):
         self.kv = nn.Linear(kv_dim, 2 * d_model)
         self.proj = nn.Linear(d_model, d_model)
 
-    def forward(self, x, ctx):
+    def forward(self, x, ctx, ctx_mask=None):
         B, L, C = x.shape
         Lc = ctx.shape[1]
         q = self.q(x).view(B, L, self.n_heads, -1).transpose(1, 2)
         kv = self.kv(ctx).view(B, Lc, 2, self.n_heads, -1)
         k, v = (t.transpose(1, 2) for t in kv.unbind(2))
-        out = F.scaled_dot_product_attention(q, k, v)
+        # ctx_mask: [B, Lc] bool key-padding mask (True = real token); None
+        # keeps the exact unmasked SDPA call (byte-identical fast path)
+        attn_mask = ctx_mask[:, None, None, :] if ctx_mask is not None else None
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         return self.proj(out.transpose(1, 2).reshape(B, L, C))
 
 
@@ -143,9 +146,9 @@ class _Block(nn.Module):
         self.mlp = nn.Sequential(nn.Linear(d_model, ffn_mult * d_model), nn.GELU(),
                                  nn.Linear(ffn_mult * d_model, d_model))
 
-    def forward(self, x, positions, mask, ctx):
+    def forward(self, x, positions, mask, ctx, ctx_mask=None):
         x = x + self.attn(self.ln1(x), positions, mask)
-        x = x + self.cross(self.lnc(x), ctx)
+        x = x + self.cross(self.lnc(x), ctx, ctx_mask)
         x = x + self.mlp(self.ln2(x))
         return x
 
@@ -193,12 +196,17 @@ class VARPlanner(nn.Module):
 
     # ---------------------------------------------------------------- utils
 
-    def _pooled_start(self, prompt_feats: torch.Tensor) -> torch.Tensor:
-        """Learned attention pool over prompt features -> [B, d_model]."""
+    def _pooled_start(self, prompt_feats: torch.Tensor,
+                      prompt_mask: torch.Tensor | None = None) -> torch.Tensor:
+        """Learned attention pool over prompt features -> [B, d_model].
+        prompt_mask: [B, Lp] bool (True = real token); padded positions are
+        excluded from the pool. None = all-real (unchanged behavior)."""
         B = prompt_feats.shape[0]
         q = self.pool_query.expand(B, -1, -1)                   # [B,1,H]
-        att = torch.softmax(
-            (q @ prompt_feats.transpose(1, 2)) / math.sqrt(q.shape[-1]), dim=-1)
+        logits = (q @ prompt_feats.transpose(1, 2)) / math.sqrt(q.shape[-1])
+        if prompt_mask is not None:
+            logits = logits.masked_fill(~prompt_mask[:, None, :], float("-inf"))
+        att = torch.softmax(logits, dim=-1)
         pooled = att @ prompt_feats                             # [B,1,H]
         return self.start_mlp(pooled.squeeze(1))
 
@@ -216,30 +224,36 @@ class VARPlanner(nn.Module):
                          for k, l in enumerate(self.scales)])
         return x + self.scale_emb(sid[:x.shape[1]])[None]
 
-    def _trunk(self, x: torch.Tensor, ctx: torch.Tensor) -> torch.Tensor:
+    def _trunk(self, x: torch.Tensor, ctx: torch.Tensor,
+               ctx_mask: torch.Tensor | None = None) -> torch.Tensor:
         device = x.device
         positions = scale_coordinates(self.scales, self.seq_len, device)
         mask = block_causal_mask(self.scales, device)
         for blk in self.blocks:
-            x = blk(x, positions, mask, ctx)
+            x = blk(x, positions, mask, ctx, ctx_mask)
         return self.head(self.ln_f(x))                          # [B, L, vocab]
 
     # ------------------------------------------------------------- training
 
     def forward(self, codes_flat: torch.Tensor, prompt_feats: torch.Tensor,
-                cond_drop: torch.Tensor | None = None):
+                cond_drop: torch.Tensor | None = None,
+                prompt_mask: torch.Tensor | None = None):
         """Teacher-forced logits [B, L, vocab] for all scale positions.
 
         codes_flat: [B, sum(scales)] ground-truth codes;
         prompt_feats: [B, Lp, H] frozen prompt-encoder features;
-        cond_drop: [B] bool — True samples get the null condition (CFG)."""
+        cond_drop: [B] bool — True samples get the null condition (CFG);
+        prompt_mask: [B, Lp] bool, True = real token — padded positions are
+        excluded from the start pool and all cross-attention. None = all-real
+        (byte-identical to the unpadded path). For dropped samples the whole
+        ctx is the (position-constant) null prompt, so the mask is a no-op."""
         B = codes_flat.shape[0]
         if cond_drop is None and self.training and self.cond_drop_p > 0:
             cond_drop = torch.rand(B, device=codes_flat.device) < self.cond_drop_p
         with torch.no_grad():
             input_maps = build_input_maps(codes_flat, self.scales, self.codebook,
                                           self.seq_len, self.upsample_mode)
-        start = self._pooled_start(prompt_feats)
+        start = self._pooled_start(prompt_feats, prompt_mask)
         ctx = prompt_feats
         if cond_drop is not None:
             # ALWAYS run the substitution (even for an all-False mask): the
@@ -251,7 +265,7 @@ class VARPlanner(nn.Module):
             null_ctx = self.null_prompt.to(ctx.dtype).expand(B, ctx.shape[1], -1)
             ctx = torch.where(cond_drop[:, None, None], null_ctx, ctx)
         x = self._assemble(input_maps, start)
-        return self._trunk(x, ctx)
+        return self._trunk(x, ctx, prompt_mask)
 
     # ------------------------------------------------------------ inference
 
@@ -263,7 +277,8 @@ class VARPlanner(nn.Module):
                  cfg_scale: float | list[float] = 1.0,
                  generator: torch.Generator | None = None,
                  forced_codes: torch.Tensor | None = None,
-                 forced_scales: list[int] | None = None) -> torch.Tensor:
+                 forced_scales: list[int] | None = None,
+                 prompt_mask: torch.Tensor | None = None) -> torch.Tensor:
         """Next-scale sampling; K forwards. Returns codes [B, sum(scales)].
 
         temperature/top_k/top_p/cfg_scale accept a scalar (applied to every
@@ -271,6 +286,8 @@ class VARPlanner(nn.Module):
         scale INDICES whose codes are taken from forced_codes (a full
         [B, sum(scales)] ladder, e.g. ground truth) instead of sampled —
         used for oracle-prefix / oracle-suffix attribution runs.
+        prompt_mask: [B, Lp] bool (True = real token) for right-padded
+        prompt batches; None = all-real (unchanged behavior).
         """
         B = prompt_feats.shape[0]
         device = prompt_feats.device
@@ -287,7 +304,7 @@ class VARPlanner(nn.Module):
                 "forced_scales requires forced_codes [B, sum(scales)]"
         use_cfg = any(c != 1.0 for k, c in enumerate(cfgs) if k not in forced)
 
-        start_c = self._pooled_start(prompt_feats)
+        start_c = self._pooled_start(prompt_feats, prompt_mask)
         ctx_c = prompt_feats
         if use_cfg:
             start_u = self.null_start[None].expand(B, -1).to(start_c.dtype)
@@ -313,10 +330,13 @@ class VARPlanner(nn.Module):
                 # run the prefix of the sequence up to and including block k
                 L_pref = sum(self.scales[:k + 1])
                 x_c = self._assemble(maps, start_c)[:, :L_pref]
-                logits = self._trunk_prefix(x_c, ctx_c, L_pref)
+                logits = self._trunk_prefix(x_c, ctx_c, L_pref, prompt_mask)
                 if cfgs[k] != 1.0:
+                    # mask also on the null path: matches training, where the
+                    # cross-attn mask applies batchwise over the merged ctx
+                    # (a no-op on the position-constant null prompt)
                     x_u = self._assemble(maps, start_u)[:, :L_pref]
-                    logits_u = self._trunk_prefix(x_u, ctx_u, L_pref)
+                    logits_u = self._trunk_prefix(x_u, ctx_u, L_pref, prompt_mask)
                     logits = logits_u + cfgs[k] * (logits - logits_u)
                 blk_logits = logits[:, seg_start:seg_start + l] / max(temps[k], 1e-6)
                 codes_k = _sample(blk_logits, top_ks[k], top_ps[k], generator)  # [B, l]
@@ -331,12 +351,13 @@ class VARPlanner(nn.Module):
             seg_start += l
         return torch.cat(codes_out, dim=1)
 
-    def _trunk_prefix(self, x: torch.Tensor, ctx: torch.Tensor, L_pref: int):
+    def _trunk_prefix(self, x: torch.Tensor, ctx: torch.Tensor, L_pref: int,
+                      ctx_mask: torch.Tensor | None = None):
         device = x.device
         positions = scale_coordinates(self.scales, self.seq_len, device)[:L_pref]
         mask = block_causal_mask(self.scales, device)[:L_pref, :L_pref]
         for blk in self.blocks:
-            x = blk(x, positions, mask, ctx)
+            x = blk(x, positions, mask, ctx, ctx_mask)
         return self.head(self.ln_f(x))
 
 

@@ -216,7 +216,8 @@ def main():
                 feats = prompt_enc(cur)
             codes = planner.generate(feats.float(), temperature=temp_arg,
                                      top_k=topk_arg, top_p=topp_arg,
-                                     cfg_scale=cfg_arg, generator=gen_rng)
+                                     cfg_scale=cfg_arg, generator=gen_rng,
+                                     prompt_mask=None)  # B=1, unpadded prompt
             return decode_codes(tokenizer_model, codes, scales, seq_len,
                                 tok_quant.upsample_mode, autocast_dtype)
 
@@ -282,7 +283,8 @@ def main():
                         top_k=topk_arg, top_p=topp_arg,
                         cfg_scale=cfg_arg, generator=gen_rng,
                         forced_codes=ref_codes if oracle_scales else None,
-                        forced_scales=oracle_scales)
+                        forced_scales=oracle_scales,
+                        prompt_mask=None)  # fixed-length windows, unpadded
                     ids = decode_codes(tokenizer_model, codes, scales, seq_len,
                                        tok_quant.upsample_mode, autocast_dtype)
                     pieces.append(ids)
