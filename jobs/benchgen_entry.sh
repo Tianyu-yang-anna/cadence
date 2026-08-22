@@ -61,7 +61,7 @@ for b in $BENCHMARKS; do
   [ -n "$CFG_SCHEDULE" ] && SCHED="$SCHED --cfg_schedule $CFG_SCHEDULE"
   run_step "generate $b" bash -c \
     "cd '$CODE' && '$PY' generate.py --backend planner --config '$CONFIG' \
-      --set 'run_name=$PLANNER_FULL' --benchmark '$BDIR/$b.jsonl' --n '$N' \
+      --set 'run_name=$PLANNER_FULL' --set 'planner.tokenizer_run_dir=$LOCAL_ROOT/runs/$TOK_FULL' --benchmark '$BDIR/$b.jsonl' --n '$N' \
       --temperature '$TEMP' --top_p '$TOPP' --cfg '$CFG_W' $SCHED \
       --out '$OUT/gens_${b}${TAG}.jsonl'" \
     && run_step "eval $b" "$PY" "$CODE/eval_generation.py" \

@@ -65,7 +65,7 @@ for row in "${GRID[@]}"; do
   [ ${#EXTRA[@]} -gt 0 ] && EXTRA_STR=$(printf '%q ' "${EXTRA[@]}")
   run_step "sweep $name" bash -c \
     "cd '$CODE' && '$PY' generate.py --backend planner --config '$CONFIG' \
-      --set 'run_name=$PLANNER_FULL' --split val --n '$N' \
+      --set 'run_name=$PLANNER_FULL' --set 'planner.tokenizer_run_dir=$LOCAL_ROOT/runs/$TOK_FULL' --split val --n '$N' \
       --temperature 0.8 --top_p 0.9 --cfg 3.0 $EXTRA_STR \
       --out '$OUT/gens_sched_${name}.jsonl'" \
     && run_step "eval $name" "$PY" "$CODE/eval_generation.py" \
