@@ -42,7 +42,7 @@ from data.planner_data import PlannerPairs
 from experiments.exp5_next_scale_probe.probe_next_scale import accumulated_init_latent
 from models.ar_baseline import ARBaseline
 from models.prompt_encoder import FrozenPromptEncoder
-from models.var_planner import VARPlanner
+from models.var_planner import VARPlanner, load_planner_state
 from train_planner import load_frozen_tokenizer
 from utils.checkpoint import find_resume_ckpt, load_checkpoint
 from utils.config import load_config, resolved_out_dir
@@ -234,7 +234,7 @@ def main():
             ffn_mult=cfg.planner.ffn_mult, rope_theta=cfg.planner.rope_theta,
             upsample_mode=tok_quant.upsample_mode,
             cond_drop_p=cfg.planner.cond_drop_p).to(device)
-        planner.load_state_dict(payload["model"])
+        load_planner_state(planner, payload["model"])
         planner.eval()
         log_line(f"planner ckpt {ckpt_path} (step {payload.get('step')})")
     elif args.backend == "ar":

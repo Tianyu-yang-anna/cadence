@@ -160,7 +160,8 @@ def main():
         ckpt_path = find_resume_ckpt(out_dir) if args.resume == "auto" else args.resume
         if ckpt_path and Path(str(ckpt_path)).exists():
             payload = load_checkpoint(ckpt_path, map_location=device)
-            raw.load_state_dict(payload["model"])
+            from models.var_planner import load_planner_state
+            load_planner_state(raw, payload["model"])
             if payload.get("optimizer"):
                 optimizer.load_state_dict(payload["optimizer"])
             if payload.get("scheduler"):
