@@ -1,0 +1,11 @@
+{
+  "gen_file": "/tmp/cadence_local/schedsweep/gens_sched_hotcoarse.jsonl",
+  "n": 300,
+  "rouge1": 0.28811083723971836,
+  "rouge2": 0.034883332012348965,
+  "rougeL": 0.13335328732223012,
+  "distinct1": 0.23575772050043173,
+  "distinct2": 0.7701771562632774,
+  "ref_distinct2": 0.7509840076593028,
+  "mauve": 0.6568706332263042
+}

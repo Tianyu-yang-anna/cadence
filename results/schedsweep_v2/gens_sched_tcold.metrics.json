@@ -1,0 +1,11 @@
+{
+  "gen_file": "/tmp/cadence_local/schedsweep/gens_sched_tcold.jsonl",
+  "n": 300,
+  "rouge1": 0.2793081557416822,
+  "rouge2": 0.03345903998054314,
+  "rougeL": 0.130833850565665,
+  "distinct1": 0.24659854449345767,
+  "distinct2": 0.7913601736949483,
+  "ref_distinct2": 0.7509840076593028,
+  "mauve": 0.6032791377861326
+}

@@ -288,3 +288,19 @@ advertisement — every pod is hostnamed main.host.local; STATIC rendezvous —
 elastic c10d ignores node_rank and elected rank 0 on arbitrary nodes).
 Measured 3.7x scaling at 32 GPUs (0.68 -> 2.55 steps/s); the 1024 planner
 runs at 32 GPUs, 150k steps ETA ~16h total.
+
+## Results round 9: scale-up campaign checkpoint (2026-08-23)
+
+Everything measured so far consolidated in results/stage2_scaleup_summary.md:
+- Tokenizer 1024 (d5): test recon 99.76% (> 256-window 99.39%); dropout 0.5
+  beats 0.3 on hierarchy (prefix decodability), pilots archived.
+- v2 schedule sweep: sampling optimum is MODEL-SPECIFIC (v2 val MAUVE prefers
+  the scalar schedule 0.856 over hotcoarse 0.657; hotcoarse keeps R1/R2) —
+  per-model sweeps now a fixed step before any final eval.
+- planner_owt1024 @92k/150k (32 GPUs): val mean 7.58 bits falling; coarse
+  ramp q1-q8 well below max; q1024 = 3.44 bits. Document-level planning is
+  learnable; fine detail highly determined.
+- Infrastructure landed: 11-scale sweep grid, decdd-1024 (training),
+  best-of-N reranking (GPT-2 NLL), MaskGIT refinement (zero-gated visible
+  pathway + interleaved K-pass; tolerant ckpt loading so pre-MaskGIT
+  checkpoints keep working).
