@@ -304,3 +304,13 @@ Everything measured so far consolidated in results/stage2_scaleup_summary.md:
   best-of-N reranking (GPT-2 NLL), MaskGIT refinement (zero-gated visible
   pathway + interleaved K-pass; tolerant ckpt loading so pre-MaskGIT
   checkpoints keep working).
+
+## Round 9 addendum: schedule-selection protocol lesson (2026-08-23)
+
+v2's val sweep preferred the scalar schedule (val MAUVE 0.856 vs hotcoarse
+0.657) but the benchmark rerun (v2b) came back WORSE across the board
+(Wikipedia MAUVE 21.5 -> 14.7, WikiSource 12.3 -> 7.6, R1/R2 down).
+In-domain window-continuation val MAUVE at n=300 is a poor proxy for
+OOD benchmark MAUVE. Protocol fix: select sampling schedules on
+benchmark-like validation data (held-out benchmark rows), not on in-domain
+windows. v2's final config remains hotcoarse + denoising decoder.
