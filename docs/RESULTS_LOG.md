@@ -265,3 +265,26 @@ Four decision-critical results, one day, existing checkpoints only:
    go-signal for a plan-then-write hybrid architecture.
 Also: decoder denoising finetune mid-run curves healthy (dirty-code acc
 92.4% while clean stays 99.6%); full 9.5B-token OWT corpus prepped.
+
+## Results round 8: v2 retrain attribution + multi-node (2026-08-23)
+
+planner_owt_v2 (150k steps, doc-aware pairing + mixed-length prompts +
+same-doc history + padding masks) vs planner_owt v1, BOTH evaluated with
+hotcoarse schedule + denoising decoder:
+- **1BW: R1 9.8 -> 11.4 (+16%), R2 +44%, BS +0.5pp** — mixed-length prompt
+  training fixed the short-prompt OOD exactly as designed (GPT-2-137M = 13.4;
+  about half the gap closed).
+- WikiSource/Wikipedia/TinyStories: flat (within noise, R1 -0.4/-0.7/-0.1pp).
+  Consistent with val CE: mid-scale CE unchanged by the data fix (q16 11.66
+  vs 11.65) — the 40% contamination was NOT the cause of mid-scale entropy
+  or of the wiki-benchmark gap; its harm was localized to conditioning
+  robustness. q256 did improve 4.03 -> 3.73 bits.
+- Verdict: data hygiene = targeted win (1BW), hotcoarse+decdd remain the big
+  levers; the 1024-native run carries the wiki-benchmark hopes (protocol
+  match: no more prompt truncation at 400-600-token prefixes).
+Multi-node DDP now works on the platform (4 pitfalls solved: platform
+MASTER_PORT only; 3600s join timeout for bootstrap skew; numeric-IP
+advertisement — every pod is hostnamed main.host.local; STATIC rendezvous —
+elastic c10d ignores node_rank and elected rank 0 on arbitrary nodes).
+Measured 3.7x scaling at 32 GPUs (0.68 -> 2.55 steps/s); the 1024 planner
+runs at 32 GPUs, 150k steps ETA ~16h total.
