@@ -214,6 +214,8 @@ Version tags mark the code state of each experiment round: `v0.1-pilot`, `v0.2-b
 
 **Stage 1 Track 1 (done)**: pipeline validated end-to-end; lexical metrics near the matched AR baseline, MAUVE gap attributed to one-step parallel sampling of the finest scale (see [`results/stage1_track1_summary.md`](results/stage1_track1_summary.md)).
 
-**Stage 1 Track 2 (in flight)**: OWT/GPT-2 tokenizer done (99.39% reconstruction), 336M planner training, TextLDM 4-benchmark evaluation next.
+**Stage 1 Track 2 (done)**: 336M planner on OWT; with the per-scale "hotcoarse" sampling schedule + denoising decoder, Wikipedia MAUVE reaches **21.9** (best value in TextLDM's Table 1) at a fraction of their compute.
+
+**Stage 2 scale-up (in flight)**: 1024-window tokenizer (99.76% reconstruction), doc-aware/mixed-length data fixes (attribution measured), multi-node DDP (3.7× at 32 GPUs), MaskGIT fine-scale refinement + best-of-N reranking implemented — full campaign record in [`results/stage2_scaleup_summary.md`](results/stage2_scaleup_summary.md).
 
 **Open questions ranked next**: (1) scaling response of the MAUVE gap (Track 2); (2) rendering/planning isolation — sample only the finest scale given oracle coarse codes; (3) fine-scale rendering fixes (per-scale temperature schedule, local AR or iterative refinement over q256); (4) long-form chained generation vs AR on global-coherence metrics — the setting the planning hypothesis actually targets.
