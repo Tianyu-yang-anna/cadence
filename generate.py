@@ -9,6 +9,12 @@ Backends:
 
 Output: JSONL rows {index, prompt, reference, generated} for eval_generation.py.
 
+Best-of-N (--best_of N, planner backend only): sample N candidate
+continuations per prompt (per-candidate generator seeds derived from --seed,
+candidates stacked along the batch dim for throughput), decode each to text,
+and keep the candidate with the lowest mean per-token GPT-2 NLL conditioned
+on the prompt text (utils/rerank.GPT2Scorer) — quality at inference cost.
+
 Fairness note: the planner reads the prompt through a frozen *pretrained*
 encoder (bert-base-uncased), while the AR baseline consumes raw prompt tokens
 with from-scratch weights only — the planner gets pretrained knowledge the AR
@@ -41,6 +47,7 @@ from train_planner import load_frozen_tokenizer
 from utils.checkpoint import find_resume_ckpt, load_checkpoint
 from utils.config import load_config, resolved_out_dir
 from utils.logging import log_line
+from utils.rerank import candidate_seed, select_best
 
 
 def load_detokenizer(bin_dir: str):
@@ -72,16 +79,29 @@ def plan_windows(ref_token_len: int, seq_len: int, chain_cap: int) -> int:
 
 @torch.no_grad()
 def run_benchmark(rows, detok, gen_window, seq_len, out_path, *,
-                  max_prompt_tokens=512, chain_cap=4, device="cpu"):
+                  max_prompt_tokens=512, chain_cap=4, device="cpu",
+                  best_of=1, scorer=None, base_seed=0):
     """TextLDM-protocol continuation over free-text {prompt, reference} rows.
 
     Prompts are variable-length (tokenized on the fly, suffix-truncated);
     enough windows are chained to cover the reference, then the generated
     text is word-truncated to the reference length so ROUGE/BERTScore are
-    not length-confounded. gen_window(prompt_ids)->ids is the model seam.
+    not length-confounded. gen_window(prompt_ids, generator=...)->ids is the
+    model seam.
+
+    best_of > 1: the N candidates run as ONE batch of N through gen_window
+    (the prompt repeated N times — same length, so no mask is needed and the
+    planner is batch-independent: each row matches single-candidate
+    semantics). One dedicated generator (seeded candidate_seed(base_seed, 0))
+    carries state across windows and rows, so runs stay reproducible; the
+    scored/kept text is the word-truncated one that would be written.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if best_of > 1:
+        assert scorer is not None, "best_of > 1 requires a scorer"
+        bo_rng = torch.Generator(device=device).manual_seed(
+            candidate_seed(base_seed, 0))
     with open(out_path, "w") as fout:
         for i, row in enumerate(rows):
             prompt_text, ref_text = row["prompt"], row["reference"]
@@ -89,14 +109,32 @@ def run_benchmark(rows, detok, gen_window, seq_len, out_path, *,
             ids = ids[-max_prompt_tokens:]
             cur = torch.tensor([ids], dtype=torch.long, device=device)
             ref_ids = detok(ref_text, add_special_tokens=False)["input_ids"]
-            pieces = []
-            for _ in range(plan_windows(len(ref_ids), seq_len, chain_cap)):
-                out_ids = gen_window(cur)
-                pieces.append(out_ids)
-                cur = out_ids  # chain: generated window becomes prompt
-            text = detok.decode(torch.cat(pieces, dim=1)[0].cpu().tolist(),
-                                skip_special_tokens=True)
-            gen = " ".join(text.split()[: len(ref_text.split())])
+            n_windows = plan_windows(len(ref_ids), seq_len, chain_cap)
+            n_ref_words = len(ref_text.split())
+            if best_of == 1:
+                pieces = []
+                for _ in range(n_windows):
+                    out_ids = gen_window(cur)
+                    pieces.append(out_ids)
+                    cur = out_ids  # chain: generated window becomes prompt
+                text = detok.decode(torch.cat(pieces, dim=1)[0].cpu().tolist(),
+                                    skip_special_tokens=True)
+                gen = " ".join(text.split()[:n_ref_words])
+            else:
+                cur = cur.repeat(best_of, 1)  # N identical prompts, one batch
+                pieces = []
+                for _ in range(n_windows):
+                    out_ids = gen_window(cur, generator=bo_rng)
+                    pieces.append(out_ids)
+                    cur = out_ids
+                all_ids = torch.cat(pieces, dim=1).cpu()
+                cands = [" ".join(
+                    detok.decode(all_ids[c].tolist(),
+                                 skip_special_tokens=True).split()[:n_ref_words])
+                    for c in range(best_of)]
+                best, _ = select_best(scorer, [prompt_text],
+                                      [[t] for t in cands])
+                gen = best[0]
             fout.write(json.dumps({"index": i, "prompt": prompt_text,
                                    "reference": ref_text, "generated": gen}) + "\n")
             if (i + 1) % 100 == 0:
@@ -133,8 +171,18 @@ def main():
     ap.add_argument("--chain_cap", type=int, default=4,
                     help="max windows chained per benchmark row")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--best_of", type=int, default=1,
+                    help="sample N candidates per prompt and keep the lowest "
+                         "scorer NLL (planner backend only)")
+    ap.add_argument("--rerank_scorer", default="gpt2-large",
+                    help="HF causal LM that reranks --best_of candidates")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+
+    assert args.best_of >= 1, "--best_of must be >= 1"
+    if args.best_of > 1:
+        assert args.backend == "planner", \
+            "--best_of applies to the planner backend only"
 
     def _sched(s, cast, scalar):
         return [cast(x) for x in s.split(",")] if s else scalar
@@ -201,6 +249,12 @@ def main():
         ar.eval()
         log_line(f"AR ckpt {ckpt_path} (step {payload.get('step')})")
 
+    scorer = None
+    if args.best_of > 1:  # load once; --best_of 1 never touches the scorer
+        from utils.rerank import GPT2Scorer
+        scorer = GPT2Scorer(device, model_name=args.rerank_scorer)
+        log_line(f"best_of={args.best_of} reranking with {args.rerank_scorer}")
+
     if args.benchmark:
         assert args.backend == "planner", "--benchmark supports backend=planner only"
         from contextlib import nullcontext as _nc
@@ -211,13 +265,14 @@ def main():
 
         assert oracle_scales is None, "--oracle_scales needs window-mode GT codes"
 
-        def gen_window(cur):
+        def gen_window(cur, generator=gen_rng):
             with _ac():
                 feats = prompt_enc(cur)
             codes = planner.generate(feats.float(), temperature=temp_arg,
                                      top_k=topk_arg, top_p=topp_arg,
-                                     cfg_scale=cfg_arg, generator=gen_rng,
-                                     prompt_mask=None)  # B=1, unpadded prompt
+                                     cfg_scale=cfg_arg, generator=generator,
+                                     prompt_mask=None)  # equal-length prompts,
+            # unpadded (B=1, or best_of copies of the same prompt)
             return decode_codes(tokenizer_model, codes, scales, seq_len,
                                 tok_quant.upsample_mode, autocast_dtype)
 
@@ -227,7 +282,9 @@ def main():
                  f"(T={temp_arg}, top_p={topp_arg}, cfg={cfg_arg})")
         run_benchmark(rows, detok, gen_window, seq_len, args.out,
                       max_prompt_tokens=args.max_prompt_tokens,
-                      chain_cap=args.chain_cap, device=device)
+                      chain_cap=args.chain_cap, device=device,
+                      best_of=args.best_of, scorer=scorer,
+                      base_seed=args.seed)
         return
 
     bin_dir = Path(cfg.data.bin_dir)
@@ -253,9 +310,13 @@ def main():
         return (torch.autocast(device_type=device.type, dtype=autocast_dtype)
                 if autocast_dtype else nullcontext())
 
+    # best_of > 1: shrink the data batch so the stacked candidate batch
+    # (candidates x rows) stays within the configured --batch_size budget
+    data_bs = (args.batch_size if args.best_of == 1
+               else max(1, args.batch_size // args.best_of))
     with torch.no_grad():
-        for start in range(0, n, args.batch_size):
-            idxs = list(range(start, min(start + args.batch_size, n)))
+        for start in range(0, n, data_bs):
+            idxs = list(range(start, min(start + data_bs, n)))
             prompt_ids = torch.stack(
                 [pairs[i]["prompt_ids"] for i in idxs]).to(device)
             ref_codes = torch.stack([pairs[i]["codes"] for i in idxs]).to(device)
@@ -272,7 +333,7 @@ def main():
                                           top_k=args.top_k, top_p=args.top_p,
                                           generator=gen_rng)
                 gen_texts = [detok.decode(r.tolist(), skip_special_tokens=True) for r in new_ids.cpu()]
-            else:  # planner
+            elif args.best_of == 1:  # planner
                 cur_prompt = prompt_ids
                 pieces = []
                 for _ in range(args.chain):
@@ -291,6 +352,43 @@ def main():
                     cur_prompt = ids  # chain: generated window becomes prompt
                 all_ids = torch.cat(pieces, dim=1)
                 gen_texts = [detok.decode(r.tolist(), skip_special_tokens=True) for r in all_ids.cpu()]
+            else:  # planner, best_of > 1: candidates stacked along the batch
+                b = prompt_ids.shape[0]
+                # candidates per stacked forward, within the batch budget
+                chunk = max(1, args.batch_size // b)
+                cand_texts = []  # [N][b] decoded texts, candidate-major
+                for c0 in range(0, args.best_of, chunk):
+                    m = min(chunk, args.best_of - c0)
+                    # per-chunk generator: reproducible, distinct candidates
+                    g = torch.Generator(device=device).manual_seed(
+                        candidate_seed(args.seed, c0))
+                    cur_prompt = prompt_ids.repeat(m, 1)  # candidate-major
+                    rc = ref_codes.repeat(m, 1) if oracle_scales else None
+                    pieces = []
+                    for _ in range(args.chain):
+                        with ac():
+                            feats = prompt_enc(cur_prompt)
+                        codes = planner.generate(
+                            feats.float(), temperature=temp_arg,
+                            top_k=topk_arg, top_p=topp_arg,
+                            cfg_scale=cfg_arg, generator=g,
+                            forced_codes=rc, forced_scales=oracle_scales,
+                            prompt_mask=None)  # fixed-length, unpadded
+                        ids = decode_codes(tokenizer_model, codes, scales,
+                                           seq_len, tok_quant.upsample_mode,
+                                           autocast_dtype)
+                        pieces.append(ids)
+                        cur_prompt = ids  # chain per candidate row
+                    all_ids = torch.cat(pieces, dim=1).cpu()
+                    for ci in range(m):
+                        rows_ids = all_ids[ci * b:(ci + 1) * b]
+                        cand_texts.append(
+                            [detok.decode(r.tolist(), skip_special_tokens=True)
+                             for r in rows_ids])
+                prompt_texts = [detok.decode(p.cpu().tolist(),
+                                             skip_special_tokens=True)
+                                for p in prompt_ids]
+                gen_texts, _ = select_best(scorer, prompt_texts, cand_texts)
 
             for j, i in enumerate(idxs):
                 # reference = true next-window text (from raw bins, not codes)
