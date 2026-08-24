@@ -329,3 +329,20 @@ The 1024-native window removed the protocol mismatch exactly where predicted
 (long-document benchmarks). Schedule lesson replicated at 11 scales: scalar
 config was last in the 6-way selection sweep; winner s5 = hotter coarse
 (T=1.4) + near-frozen fine end + CFG taper.
+
+## Results round 11: refinement & reranking ablations close out (2026-08-24)
+
+- MaskGIT K-sweep (selection set): K=2/4/6 bit-identical — with the s5
+  near-argmax fine schedule, one refinement pass reaches a fixpoint. Selection
+  R2 gains (+34% WikiSource) did NOT transfer to test (second
+  selection->test transfer failure; protocol caveat reaffirmed).
+- MaskGIT K=2 on test 4x1000: neutral (+-0.5pp everywhere; Wikipedia MAUVE
+  26.0->26.1, WikiSource 15.2->14.8). Interpretation: the near-deterministic
+  fine-scale schedule already eliminates the one-shot sampling noise that
+  refinement targets — same failure mode, schedule took the win first.
+  Kept as an ablation row; flagship config remains plain s5.
+- Best-of-4 GPT-2 reranking on test: R2 up everywhere (+4..38%) but
+  WikiSource MAUVE -3.3 (reranking prefers safe/likely text, costs
+  distributional diversity). Ablation row, not flagship.
+Campaign status: 336M/1024w flagship numbers final; C4 40B prep completing
+(shards for the 768M run, which is ON HOLD pending user design changes).

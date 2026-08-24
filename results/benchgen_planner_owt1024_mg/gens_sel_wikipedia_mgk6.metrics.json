@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_sel_wikipedia_mgk6.jsonl",
+  "n": 250,
+  "rouge1": 0.256549411439037,
+  "rouge2": 0.037203557342774196,
+  "rougeL": 0.1368489589560802,
+  "distinct1": 0.2587979867758808,
+  "distinct2": 0.7379549737181395,
+  "ref_distinct2": 0.7602697609838341,
+  "bertscore_f1": 0.7956335544586182,
+  "mauve": 0.27249913639009316
+}
