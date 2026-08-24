@@ -1,0 +1,41 @@
+# 768M planner scale-up over the frozen vqvae_owt9_1024_d5 tokenizer, trained
+# on the sharded 40B-token C4-English set (jobs/c4prep -> c4merge, dumpshard ->
+# codemerge). Same doc_mode/prompt handling as planner_owt1024; wider/deeper
+# trunk + gpt2-medium prompt encoder, longer cosine schedule, smaller micro
+# batch (activation memory at d_model 1536).
+run_name: planner_c4_768m
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 1024
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/c4_gpt2
+  num_workers: 4
+planner:
+  d_model: 1536
+  n_layers: 28
+  n_heads: 16
+  ffn_mult: 4
+  cond_drop_p: 0.1
+  prompt_encoder: gpt2-medium
+  tokenizer_run_dir: /tmp/cadence_local/runs/vqvae_owt9_1024_d5
+  codes_dir: /tmp/cadence_local/data/codes_c4_1024
+  doc_aware: true
+  doc_mode: target
+  prompt_mixed: true
+  history_max: 0
+train:
+  max_steps: 250000
+  batch_size: 256
+  micro_batch_size: 2             # 768M trunk + 2048-code seqs + 1024-token prompts
+  lr: 1.5e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 3000
+  bf16: true
+  log_interval: 50
+  eval_interval: 2500
+  eval_batches: 20
+  save_interval: 5000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

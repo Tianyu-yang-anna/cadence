@@ -2,6 +2,10 @@
 frozen tokenizer checkpoint. Output: codes_{split}.npy (int16, [n_windows,
 sum(scales)]) — the planner's training targets.
 
+Sharded dumps (768M run): --window_range "A:B" dumps only windows [A, B) of
+each requested split (B clamped to the split length, so shard 0 can pass
+train,val,test with its train range and still get full val/test dumps).
+
 Usage:
   python data/dump_codes.py --config configs/vqvae_wikitext_bert.yaml \
       --set run_name=vqvae_wt103_hybrid --ckpt auto --out <dir>
@@ -15,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch.utils.data import Subset
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 
@@ -26,6 +31,16 @@ from utils.config import ModelConfig, QuantizerConfig, _build, load_config, reso
 from utils.logging import log_line
 
 
+def slice_windows(ds, window_range: tuple[int, int] | None):
+    """View of windows [A, B) of ds (B clamped to len(ds)); None -> full ds."""
+    if window_range is None:
+        return ds
+    a, b = window_range
+    b = min(b, len(ds))
+    assert 0 <= a < b, f"window_range [{a}:{b}) is empty for a {len(ds)}-window split"
+    return Subset(ds, range(a, b))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -33,7 +48,17 @@ def main():
     ap.add_argument("--ckpt", default="auto")
     ap.add_argument("--out", required=True)
     ap.add_argument("--batch_size", type=int, default=128)
+    ap.add_argument("--splits", default="train,val,test", help="comma list")
+    ap.add_argument("--window_range", default="",
+                    help='"A:B": dump only windows [A,B) of each split '
+                         "(clamped to the split length)")
     args = ap.parse_args()
+    w_range = None
+    if args.window_range:
+        a, b = (int(x) for x in args.window_range.split(":"))
+        w_range = (a, b)
+    splits = [s.strip() for s in args.splits.split(",") if s.strip()]
+    assert splits, f"bad --splits {args.splits!r}"
 
     cfg = load_config(args.config, args.sets)
     out_dir = resolved_out_dir(cfg)
@@ -57,9 +82,10 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     meta = {"ckpt": str(ckpt_path), "step": int(payload.get("step", -1)),
-            "scales": scales, "splits": {}}
-    for split in ("train", "val", "test"):
-        ds = build_dataset(cfg, split)
+            "scales": scales, "window_range": list(w_range) if w_range else None,
+            "splits": {}}
+    for split in splits:
+        ds = slice_windows(build_dataset(cfg, split), w_range)
         path = out / f"codes_{split}.npy"
         # streamed int16 memmap: full-corpus dumps must not materialize in RAM
         codes = dump_codes(model, ds, device, n_windows=len(ds),
