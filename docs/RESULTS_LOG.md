@@ -314,3 +314,18 @@ In-domain window-continuation val MAUVE at n=300 is a poor proxy for
 OOD benchmark MAUVE. Protocol fix: select sampling schedules on
 benchmark-like validation data (held-out benchmark rows), not on in-domain
 windows. v2's final config remains hotcoarse + denoising decoder.
+
+## Results round 10: 1024-native planner final test (2026-08-24)
+
+planner_owt1024 (336M, 1024-window, target-mode data, schedule s5 selected on
+a disjoint 4x250 selection set — pre-registered): test 4x1000 vs the best
+256-window config (v1 + hotcoarse + denoising decoder), paper units x100:
+- Wikipedia:  R1 25.5 -> 26.2, R2 3.5 -> 3.9, MAUVE 21.9 -> **26.0**
+  (TextLDM table best: 10.5 — our lead is now 2.5x)
+- WikiSource: R1 30.4 -> 30.6, R2 4.1 -> 4.4, MAUVE 12.5 -> **15.2**
+- 1BW: R1 9.8 -> 10.8 (+10%)
+- TinyStories: flat (domain-bound)
+The 1024-native window removed the protocol mismatch exactly where predicted
+(long-document benchmarks). Schedule lesson replicated at 11 scales: scalar
+config was last in the 6-way selection sweep; winner s5 = hotter coarse
+(T=1.4) + near-frozen fine end + CFG taper.
