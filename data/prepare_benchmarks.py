@@ -48,6 +48,10 @@ def main():
     ap.add_argument("--min_words", type=int, default=120)
     ap.add_argument("--max_words", type=int, default=900)
     ap.add_argument("--benchmarks", default="tinystories,lm1b,wikipedia,wikisource")
+    ap.add_argument("--skip", type=int, default=0,
+                    help="skip the first N stream rows (disjoint selection "
+                         "sets: --seed only moves the prefix cut, NOT which "
+                         "documents are sampled)")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -57,7 +61,7 @@ def main():
         rng = random.Random(args.seed)
         rows = []
         stream = load_stream(name)
-        for row in itertools.islice(stream, 200000):
+        for row in itertools.islice(stream, args.skip, args.skip + 200000):
             text = (row.get("text") or "").strip()
             words = text.split()
             if name == "lm1b":
