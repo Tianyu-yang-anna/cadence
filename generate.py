@@ -163,6 +163,10 @@ def main():
     ap.add_argument("--oracle_scales", default="",
                     help="comma list of scale INDICES forced to ground-truth "
                          "codes (attribution runs; planner backend, window mode)")
+    ap.add_argument("--refine_scales", default="",
+                    help="comma list of scale INDICES for MaskGIT refinement "
+                         "(requires a maskgit-finetuned checkpoint)")
+    ap.add_argument("--refine_steps", type=int, default=0)
     ap.add_argument("--chain", type=int, default=1, help="windows to chain")
     ap.add_argument("--benchmark", default="",
                     help="free-text benchmark jsonl {prompt, reference}; "
@@ -192,6 +196,10 @@ def main():
     cfg_arg = _sched(args.cfg_schedule, float, args.cfg)
     oracle_scales = ([int(x) for x in args.oracle_scales.split(",")]
                      if args.oracle_scales else None)
+    refine_scales = ([int(x) for x in args.refine_scales.split(",")]
+                     if args.refine_scales else None)
+    if refine_scales is not None:
+        assert args.backend == "planner" and args.refine_steps > 0
     if oracle_scales is not None:
         assert args.backend == "planner" and args.chain == 1, \
             "--oracle_scales: planner backend with chain=1 only"

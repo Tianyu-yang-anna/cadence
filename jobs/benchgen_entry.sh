@@ -78,6 +78,7 @@ RERANK=""
 [ -n "$RERANK_SCORER" ] && RERANK="--rerank_scorer $RERANK_SCORER"
 for b in $BENCHMARKS; do
   SCHED=""
+  [ -n "$REFINE" ] && SCHED="$SCHED --refine_scales ${REFINE%%:*} --refine_steps ${REFINE##*:}"
   [ -n "$TEMP_SCHEDULE" ] && SCHED="$SCHED --temp_schedule $TEMP_SCHEDULE"
   [ -n "$TOPP_SCHEDULE" ] && SCHED="$SCHED --topp_schedule $TOPP_SCHEDULE"
   [ -n "$CFG_SCHEDULE" ] && SCHED="$SCHED --cfg_schedule $CFG_SCHEDULE"
