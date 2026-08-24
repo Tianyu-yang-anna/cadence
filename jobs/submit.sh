@@ -18,7 +18,8 @@ case "$GPU" in
   8xh100) GPUS=8; GPU_TYPE=GPU_8xH100 ;;
   16xh100) GPUS=16; GPU_TYPE=GPU_8xH100 ;;   # 2 nodes
   32xh100) GPUS=32; GPU_TYPE=GPU_8xH100 ;;   # 4 nodes
-  *) echo "unknown gpu '$GPU' (1xh100|8xh100|16xh100|32xh100)"; exit 1 ;;
+  64xh100) GPUS=64; GPU_TYPE=GPU_8xH100 ;;   # 8 nodes
+  *) echo "unknown gpu '$GPU' (1xh100|8xh100|16xh100|32xh100|64xh100)"; exit 1 ;;
 esac
 
 NAME="cadence-$STAGE${SUFFIX:+-$SUFFIX}"
