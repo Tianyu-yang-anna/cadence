@@ -13,6 +13,24 @@ CFG_W="${CFG_W:-3.0}"
 TEMP_SCHEDULE="${TEMP_SCHEDULE:-}"   # per-scale comma lists; override scalars
 TOPP_SCHEDULE="${TOPP_SCHEDULE:-}"
 CFG_SCHEDULE="${CFG_SCHEDULE:-}"
+# named presets (platform caps env_vars at 10; 3 schedule envs -> 1)
+case "${SCHED_PRESET:-}" in
+  hc7)  TEMP_SCHEDULE="1.2,1.1,1.0,0.9,0.7,0.4,0.1"
+        TOPP_SCHEDULE="0.98,0.95,0.9,0.9,0.8,0.6,0.4"
+        CFG_SCHEDULE="3,3,3,3,3,2,1.5" ;;
+  s1)   TEMP_SCHEDULE="1.2,1.2,1.1,1.1,1.0,0.9,0.8,0.7,0.5,0.3,0.1"
+        TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4"
+        CFG_SCHEDULE="3,3,3,3,3,3,3,3,2,1.5,1.5" ;;
+  s2)   TEMP_SCHEDULE="1.2,1.2,1.1,1.1,1.0,0.9,0.8,0.6,0.4,0.1,0.02"
+        TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.7,0.5,0.4,0.3"
+        CFG_SCHEDULE="3,3,3,3,3,3,3,3,2,1.5,1" ;;
+  s3)   TEMP_SCHEDULE="1.2,1.2,1.1,1.0,0.9,0.7,0.6,0.5,0.4,0.2,0.05"
+        TOPP_SCHEDULE="0.98,0.98,0.95,0.9,0.9,0.8,0.8,0.7,0.6,0.4,0.3"
+        CFG_SCHEDULE="3,3,3,3,3,3,3,3,2,1.5,1" ;;
+  s5)   TEMP_SCHEDULE="1.4,1.3,1.2,1.1,1.0,0.9,0.8,0.7,0.5,0.3,0.1"
+        TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4"
+        CFG_SCHEDULE="3,3,3,3,3,3,3,3,2,1.5,1.5" ;;
+esac
 BEST_OF="${BEST_OF:-1}"              # best-of-N reranking (1 = off)
 RERANK_SCORER="${RERANK_SCORER:-}"   # optional scorer override (gpt2-large)
 TAG="${TAG:-}"
