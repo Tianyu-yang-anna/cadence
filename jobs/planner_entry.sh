@@ -125,10 +125,12 @@ else
   LAUNCH=("$PY")
 fi
 
+# TRAIN_SCRIPT: train_planner.py (STAR/CFG legacy) | train_prefix_planner.py
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-train_planner.py}"
 # shellcheck disable=SC2086
 (cd "$CODE" && env -u WORLD_SIZE -u RANK -u LOCAL_RANK -u LOCAL_WORLD_SIZE \
     -u MASTER_ADDR -u MASTER_PORT -u NODE_RANK -u POD_RANK -u NUM_NODES \
-    "${LAUNCH[@]}" train_planner.py --config "$CONFIG" \
+    "${LAUNCH[@]}" "$TRAIN_SCRIPT" --config "$CONFIG" \
     --set "run_name=$FULL_RUN_NAME" $EXTRA_ARGS --resume auto) >> "$LOG_LOCAL" 2>&1
 rc=$?
 if [ "${NODE_RANK:-0}" = "0" ]; then

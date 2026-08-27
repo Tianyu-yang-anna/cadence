@@ -1,0 +1,43 @@
+# 100M prefix planner over the PER-SCALE-codebook PQ tokenizer (A+B redesign):
+# in-context e_hat prefix conditioning (no gpt2 encoder, no cross-attn, no
+# CFG), per-scale PQ segment heads (S=4, N=64). Paired run:
+# planner_prefix_100m_pqsh.yaml (shared-codebook tokenizer/codes) —
+# identical in every other field; the pair isolates shared vs per-scale at
+# the planner level. Sequence = 1024 prefix + 2047 ladder = 3071.
+# 100k steps x 256 windows x 1024 tok = 26.2B tokens = 2.8 owt9 epochs
+# (<= 4-epoch red line). ~103M params at 14L x 768.
+run_name: planner_prefix_100m_pqps
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 1024
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/owt9_gpt2
+  num_workers: 4
+planner:
+  d_model: 768
+  n_layers: 14
+  n_heads: 12
+  ffn_mult: 4
+  cond_drop_p: 0.0                # no CFG in this architecture (ignored)
+  tokenizer_run_dir: /tmp/cadence_local/runs/vqvae_owt9_1024_pqps
+  codes_dir: /tmp/cadence_local/data/codes_owt9_1024_pqps
+  doc_aware: true
+  doc_mode: target
+  prompt_mixed: true
+  history_max: 0
+train:
+  max_steps: 100000
+  batch_size: 256
+  micro_batch_size: 4             # seq 3071 (prefix 1024 + ladder 2047)
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 2000
+  bf16: true
+  log_interval: 50
+  eval_interval: 2000
+  eval_batches: 20
+  save_interval: 4000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

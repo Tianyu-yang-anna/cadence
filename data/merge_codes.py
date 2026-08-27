@@ -28,20 +28,25 @@ def merge_codes(shard_dirs: list[Path], out: Path) -> dict:
         assert m["ckpt"] == head["ckpt"] and m.get("step") == head.get("step"), \
             f"ckpt mismatch: {d} dumped from {m['ckpt']}@{m.get('step')} != " \
             f"{head['ckpt']}@{head.get('step')}"
-    width = sum(head["scales"])
+        # v2 provenance: PQ fingerprint + codebook hash must match too
+        for key in ("pq", "codebook_sha256", "width", "dtype"):
+            assert m.get(key) == head.get(key), \
+                f"{key} mismatch: {d} has {m.get(key)} != {head.get(key)}"
+    width = head.get("width") or sum(head["scales"])
+    dtype = np.dtype(head.get("dtype") or "int16")
 
     parts = []
     for d, m in zip(shard_dirs, metas):
         arr = np.load(d / "codes_train.npy", mmap_mode="r")
-        assert arr.ndim == 2 and arr.shape[1] == width and arr.dtype == np.int16, \
-            f"{d}/codes_train.npy is {arr.dtype}{arr.shape}, want int16 [n, {width}]"
+        assert arr.ndim == 2 and arr.shape[1] == width and arr.dtype == dtype, \
+            f"{d}/codes_train.npy is {arr.dtype}{arr.shape}, want {dtype} [n, {width}]"
         assert arr.shape[0] == m["splits"]["train"], \
             f"{d}: {arr.shape[0]} rows != meta count {m['splits']['train']}"
         parts.append(arr)
     n_total = sum(a.shape[0] for a in parts)
 
     out.mkdir(parents=True, exist_ok=True)
-    dst = open_memmap(str(out / "codes_train.npy"), mode="w+", dtype=np.int16,
+    dst = open_memmap(str(out / "codes_train.npy"), mode="w+", dtype=dtype,
                       shape=(n_total, width))
     row = 0
     for arr in parts:
@@ -55,6 +60,8 @@ def merge_codes(shard_dirs: list[Path], out: Path) -> dict:
 
     meta = {"ckpt": head["ckpt"], "step": head.get("step"),
             "scales": head["scales"], "window_range": None,
+            "width": width, "dtype": np.dtype(dtype).name,
+            "pq": head.get("pq"), "codebook_sha256": head.get("codebook_sha256"),
             "splits": {"train": n_total}}
     for split in ("val", "test"):  # held-out splits live only in shard 0
         src = shard_dirs[0] / f"codes_{split}.npy"

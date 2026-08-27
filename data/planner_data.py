@@ -42,10 +42,14 @@ class PlannerPairs(Dataset):
                  sep_id: int | None = None, doc_aware: bool = False,
                  doc_mode: str = "pair",
                  prompt_len_cfg: dict | None = None, history_max: int = 0,
-                 pad_id: int = 0, rng_seed: int = 0, min_prompt: int = 4):
+                 pad_id: int = 0, rng_seed: int = 0, min_prompt: int = 4,
+                 pq_segments: int = 0):
         self.windows = WindowBinDataset(bin_path, seq_len)
         self.codes = np.load(codes_path, mmap_mode="r")
         self.seq_len = seq_len
+        # PQ dumps store S segment indices per ladder position (row width =
+        # sum(scales) * S, segment-fastest); reshape rows to [sum(scales), S]
+        self.pq_segments = pq_segments
         n = min(len(self.windows), self.codes.shape[0]) - 1
         if limit_pairs > 0:
             n = min(n, limit_pairs)
@@ -117,6 +121,8 @@ class PlannerPairs(Dataset):
         prompt = self.windows[i]["input_ids"]                       # window t
         codes = torch.from_numpy(
             np.asarray(self.codes[i + 1], dtype=np.int64))          # window t+1
+        if self.pq_segments > 0:
+            codes = codes.view(-1, self.pq_segments)
         avail = self.seq_len                    # same-document tail of window t
         if self.suffix_len is not None:
             avail = int(self.suffix_len[i])
@@ -159,6 +165,57 @@ def make_planner_collate(pad_id: int):
                 "codes": torch.stack([b["codes"] for b in batch]),
                 "index": torch.tensor([b["index"] for b in batch])}
     return collate
+
+
+class make_prefix_collate:
+    """LEFT-pad variable-length prompts to a FIXED window_len (the frozen
+    tokenizer's window): real tokens right-aligned against the continuation
+    boundary, EOT pad on the left — the exact layout of the tokenizer's
+    var_len training augmentation and of benchmark prompt encoding. The
+    prefix planner consumes the encoded window, so the batch must be the
+    tokenizer's fixed length, not the batch max. (A class, not a closure:
+    dataloader workers must pickle it under the spawn start method.)"""
+
+    def __init__(self, pad_id: int, window_len: int):
+        self.pad_id = pad_id
+        self.window_len = window_len
+
+    def __call__(self, batch):
+        window_len = self.window_len
+        prompts = [b["prompt_ids"] for b in batch]
+        ids = torch.full((len(prompts), window_len), self.pad_id, dtype=torch.long)
+        mask = torch.zeros(len(prompts), window_len, dtype=torch.bool)
+        for j, p in enumerate(prompts):
+            assert p.shape[0] <= window_len, \
+                f"prompt of {p.shape[0]} tokens exceeds the {window_len} window"
+            ids[j, window_len - p.shape[0]:] = p
+            mask[j, window_len - p.shape[0]:] = True
+        return {"prompt_ids": ids, "prompt_mask": mask,
+                "codes": torch.stack([b["codes"] for b in batch]),
+                "index": torch.tensor([b["index"] for b in batch])}
+
+
+def build_prefix_pair_loader(bin_path, codes_path, seq_len, batch_size, shuffle,
+                             num_workers=4, distributed=False, seed=0,
+                             limit_pairs=0, sep_id=None, doc_mode="target",
+                             prompt_len_cfg=None, pad_id=0, rng_seed=0,
+                             pq_segments=0):
+    """Pairs for the prefix planner: PQ code targets + fixed-window
+    left-padded prompts (doc-aware target mode is the 1024-window default)."""
+    ds = PlannerPairs(bin_path, codes_path, seq_len, limit_pairs,
+                      sep_id=sep_id, doc_aware=sep_id is not None,
+                      doc_mode=doc_mode, prompt_len_cfg=prompt_len_cfg,
+                      history_max=0, pad_id=pad_id, rng_seed=rng_seed,
+                      pq_segments=pq_segments)
+    sampler = None
+    if distributed:
+        sampler = DistributedSampler(ds, shuffle=shuffle, seed=seed, drop_last=shuffle)
+        shuffle = False
+    generator = torch.Generator().manual_seed(seed) if shuffle else None
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, sampler=sampler,
+                      num_workers=num_workers, pin_memory=torch.cuda.is_available(),
+                      drop_last=sampler is not None or shuffle, generator=generator,
+                      collate_fn=make_prefix_collate(pad_id, seq_len))
 
 
 class ARPairs(Dataset):

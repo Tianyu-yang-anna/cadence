@@ -30,6 +30,17 @@ case "${SCHED_PRESET:-}" in
   s5)   TEMP_SCHEDULE="1.4,1.3,1.2,1.1,1.0,0.9,0.8,0.7,0.5,0.3,0.1"
         TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4"
         CFG_SCHEDULE="3,3,3,3,3,3,3,3,2,1.5,1.5" ;;
+  # no-CFG presets for the prefix planner (GEN_SCRIPT=generate_prefix.py):
+  # p5 = s5's temperature/top_p shape; p5hot = hotter coarse; p5cold = colder
+  # coarse; pflat = scalar anchor row (sweep baseline)
+  p5)     TEMP_SCHEDULE="1.4,1.3,1.2,1.1,1.0,0.9,0.8,0.7,0.5,0.3,0.1"
+          TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4" ;;
+  p5hot)  TEMP_SCHEDULE="1.6,1.5,1.4,1.2,1.1,1.0,0.8,0.7,0.5,0.3,0.1"
+          TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4" ;;
+  p5cold) TEMP_SCHEDULE="1.2,1.1,1.1,1.0,0.9,0.8,0.7,0.6,0.4,0.2,0.05"
+          TOPP_SCHEDULE="0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.7,0.5,0.4,0.3" ;;
+  pflat)  TEMP_SCHEDULE="0.8,0.8,0.8,0.8,0.8,0.8,0.8,0.8,0.8,0.8,0.8"
+          TOPP_SCHEDULE="0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9" ;;
 esac
 BEST_OF="${BEST_OF:-1}"              # best-of-N reranking (1 = off)
 RERANK_SCORER="${RERANK_SCORER:-}"   # optional scorer override (gpt2-large)
@@ -76,11 +87,24 @@ run_step() {
 
 RERANK=""
 [ -n "$RERANK_SCORER" ] && RERANK="--rerank_scorer $RERANK_SCORER"
+GEN_SCRIPT="${GEN_SCRIPT:-generate.py}"
 for b in $BENCHMARKS; do
   SCHED=""
-  [ -n "$REFINE" ] && SCHED="$SCHED --refine_scales ${REFINE%%:*} --refine_steps ${REFINE##*:}"
   [ -n "$TEMP_SCHEDULE" ] && SCHED="$SCHED --temp_schedule $TEMP_SCHEDULE"
   [ -n "$TOPP_SCHEDULE" ] && SCHED="$SCHED --topp_schedule $TOPP_SCHEDULE"
+  if [ "$GEN_SCRIPT" = "generate_prefix.py" ]; then
+    # prefix planner: no CFG, no best-of, no refine args
+    run_step "generate $b" bash -c \
+      "cd '$CODE' && '$PY' generate_prefix.py --config '$CONFIG' \
+        --set 'run_name=$PLANNER_FULL' --set 'planner.tokenizer_run_dir=$LOCAL_ROOT/runs/$TOK_FULL' --benchmark '$BDIR/$b.jsonl' --n '$N' \
+        --temperature '$TEMP' --top_p '$TOPP' $SCHED \
+        --out '$OUT/gens_${b}${TAG}.jsonl'" \
+      && run_step "eval $b" "$PY" "$CODE/eval_generation.py" \
+          --gen "$OUT/gens_${b}${TAG}.jsonl"
+    push_log
+    continue
+  fi
+  [ -n "$REFINE" ] && SCHED="$SCHED --refine_scales ${REFINE%%:*} --refine_steps ${REFINE##*:}"
   [ -n "$CFG_SCHEDULE" ] && SCHED="$SCHED --cfg_schedule $CFG_SCHEDULE"
   run_step "generate $b" bash -c \
     "cd '$CODE' && '$PY' generate.py --backend planner --config '$CONFIG' \

@@ -79,10 +79,20 @@ def main():
     scales = model.msrvq.scales
     assert cfg.quantizer.codebook_size <= 32767, "int16 storage requires <=32767 codes"
 
+    from utils.codes import codebook_sha256, codes_row_layout
+    width, disk_dtype = codes_row_layout(model.msrvq)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     meta = {"ckpt": str(ckpt_path), "step": int(payload.get("step", -1)),
             "scales": scales, "window_range": list(w_range) if w_range else None,
+            # v2 provenance: PQ fingerprint + codebook hash. The scales/ckpt
+            # checks alone cannot catch (S, N) mismatches or same-basename
+            # checkpoints from a different run — the hash can.
+            "width": width, "dtype": np.dtype(disk_dtype).name,
+            "pq": {"segments": cfg.quantizer.pq_segments,
+                   "codebook_size": cfg.quantizer.codebook_size,
+                   "shared_codebook": cfg.quantizer.shared_codebook},
+            "codebook_sha256": codebook_sha256(model.msrvq),
             "splits": {}}
     for split in splits:
         ds = slice_windows(build_dataset(cfg, split), w_range)
