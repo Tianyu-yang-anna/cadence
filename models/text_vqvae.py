@@ -49,7 +49,8 @@ class TextVQVAE(nn.Module):
             revival_enabled=quant_cfg.revival.enabled,
             revival_threshold=quant_cfg.revival.threshold,
             revival_interval=quant_cfg.revival.interval,
-            phi_enabled=quant_cfg.phi.enabled, phi_kernel=quant_cfg.phi.kernel_size)
+            phi_enabled=quant_cfg.phi.enabled, phi_kernel=quant_cfg.phi.kernel_size,
+            pq_segments=quant_cfg.pq_segments)
         self.decoder = TextDecoder(model_cfg)
         if model_cfg.tie_lm_head:
             self.lm_head = None  # F.linear against tok_emb.weight
@@ -104,7 +105,11 @@ class TextVQVAE(nn.Module):
                 scale_subset: list[int] | None = None,
                 update_codebook: bool = True) -> TextVQVAEOut:
         z = self.encode(input_ids, attention_mask)
-        ms = self.msrvq(z, bypass=bypass_vq, update=update_codebook)
+        # the mask reaches the quantizer too: pad positions are zeroed out of
+        # every contribution and excluded from EMA/commit statistics, so
+        # variable-length (padded) windows train cleanly
+        ms = self.msrvq(z, bypass=bypass_vq, update=update_codebook,
+                        mask=attention_mask)
         if bypass_vq:
             scale_dropout_p = 0.0  # prefixes are unquantized shortcuts during bypass
         dec_in, kept = self._decoder_input(ms, scale_dropout_p, truncate_scales,

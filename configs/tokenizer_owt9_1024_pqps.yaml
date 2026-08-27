@@ -1,0 +1,50 @@
+# PQ scale-up tokenizer, PER-SCALE codebook variant: product quantization
+# (ConceptLM-style, arXiv 2602.08984) with S=4 segments x N=64 entries x
+# 8 dims/segment over the unchanged d_code=32 bottleneck. Effective
+# per-position vocab = 64^4 = 16.8M (24 bits vs 13 for the old 8192 book).
+# Paired run: tokenizer_owt9_1024_pqsh.yaml (shared codebook) — identical
+# in every other field including seed; the pair is a single-variable A/B.
+# var_len augmentation (25% of windows cropped to a right-aligned tail with
+# left EOT pad) makes padded-prompt encoding in-distribution for the planner
+# prefix interface; eval extras report pad-bucket recon + the segment
+# coupling probe (independent-sampling risk readout) every eval_interval.
+run_name: vqvae_owt9_1024_pqps
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 1024
+  d_model: 512
+  d_code: 32
+  encoder: {num_layers: 6, num_heads: 8}
+  decoder: {num_layers: 8, num_heads: 8}
+quantizer:
+  scales: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+  codebook_size: 64                 # per-segment N
+  pq_segments: 4                    # S; d_seg = 32/4 = 8
+  shared_codebook: false
+  revival: {enabled: true, threshold: 1.0, interval: 175}
+data:
+  dataset: wikitext103              # bin-based contiguous loading
+  bin_dir: /tmp/cadence_local/data/owt9_gpt2
+  num_workers: 4
+train:
+  max_steps: 150000                 # full run (flagship parity), not a pilot
+  batch_size: 256
+  micro_batch_size: 8
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 2000
+  bf16: true
+  bypass_vq_steps: 3000
+  scale_dropout_p: 0.5
+  var_len_p: 0.25
+  var_len_lo: 16
+  var_len_pad_id: 50256
+  eval_pad_lens: [32, 128, 512]
+  eval_segment_probe: true
+  log_interval: 50
+  eval_interval: 2000
+  eval_batches: 30
+  save_interval: 4000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

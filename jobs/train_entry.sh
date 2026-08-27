@@ -8,7 +8,9 @@
 : "${RUN_NAME:?RUN_NAME env var is required}"
 CONFIG="${CONFIG:-configs/vqvae_wikitext.yaml}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
-export JOB_TAG="train-$RUN_NAME"
+# per-node log/heartbeat names: multi-node gangs otherwise overwrite
+# one shared file and mask the primary failing node
+export JOB_TAG="train-$RUN_NAME${NODE_RANK:+-n$NODE_RANK}"
 source "$(dirname "${BASH_SOURCE[0]}")/bootstrap.sh"
 
 start_heartbeat
@@ -81,9 +83,13 @@ sync_once() {
   push_log
 }
 
-( while true; do sleep 300; sync_once; done ) &
-SIDECAR_PID=$!
-trap 'kill "$SIDECAR_PID" "$HB_PID" 2>/dev/null' EXIT
+if [ "${NODE_RANK:-0}" = "0" ]; then
+  ( while true; do sleep 300; sync_once; done ) &
+  SIDECAR_PID=$!
+else
+  SIDECAR_PID=""
+fi
+trap 'kill $SIDECAR_PID "$HB_PID" 2>/dev/null' EXIT
 
 # multi-GPU node -> torchrun DDP; single GPU (the default plan) -> plain python.
 # When CUDA_VISIBLE_DEVICES is set (worker mode), respect it instead of the
@@ -93,7 +99,23 @@ if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
 else
   NPROC=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')
 fi
-if [ "${NPROC:-1}" -gt 1 ]; then
+# capture platform gang-scheduling vars BEFORE the env scrub
+MN_NODES="${NUM_NODES:-1}"
+MN_RANK="${NODE_RANK:-0}"
+MN_MASTER="${MASTER_ADDR:-}"
+MN_PORT="${MASTER_PORT:-29511}"
+if [ "$MN_NODES" -gt 1 ] && [ -n "$MN_MASTER" ]; then
+  # STATIC rendezvous ported verbatim from planner_entry.sh (all four
+  # multi-node pitfalls: platform MASTER_PORT only reachable port, numeric
+  # master IP vs shared main.host.local hostname, rank 0 pinned to node 0 for
+  # ckpt sync/markers, elastic c10d ignoring --node_rank). VQ-EMA stays
+  # correct at any world size: counts/sums are all_reduced before every
+  # update and revival broadcasts rank 0's rows.
+  log "multi-node DDP (static): $MN_NODES nodes x $NPROC GPUs (node_rank=$MN_RANK master=$MN_MASTER:$MN_PORT)"
+  LAUNCH=("$VENVS/main/bin/torchrun" --nnodes="$MN_NODES" --node_rank="$MN_RANK" \
+          --nproc_per_node="$NPROC" \
+          --master_addr="$MN_MASTER" --master_port="$MN_PORT" --max-restarts=0)
+elif [ "${NPROC:-1}" -gt 1 ]; then
   log "detected $NPROC GPUs; launching torchrun DDP"
   LAUNCH=("$VENVS/main/bin/torchrun" --standalone --nproc_per_node="$NPROC")
 else
@@ -101,12 +123,20 @@ else
 fi
 
 # shellcheck disable=SC2086  # EXTRA_ARGS is intentionally word-split
-(cd "$CODE" && "${LAUNCH[@]}" train_vqvae.py --config "$CONFIG" \
+(cd "$CODE" && env -u WORLD_SIZE -u RANK -u LOCAL_RANK -u LOCAL_WORLD_SIZE \
+    -u MASTER_ADDR -u MASTER_PORT -u NODE_RANK -u POD_RANK -u NUM_NODES \
+    "${LAUNCH[@]}" train_vqvae.py --config "$CONFIG" \
     --set "run_name=$FULL_RUN_NAME" $EXTRA_ARGS --resume auto) >> "$LOG_LOCAL" 2>&1
 rc=$?
-kill "$SIDECAR_PID" 2>/dev/null
-sync_once
+if [ "${NODE_RANK:-0}" = "0" ]; then
+  kill $SIDECAR_PID 2>/dev/null
+  sync_once
+fi
 [ $rc -ne 0 ] && { log "train FAILED rc=$rc (resubmit the same job to resume)"; exit $rc; }
+if [ "${NODE_RANK:-0}" != "0" ]; then
+  log "train finished on worker node (rank $MN_RANK); eval runs on node 0"
+  exit 0
+fi
 log "train finished; running test eval"
 
 (cd "$CODE" && "$PY" eval_vqvae.py --config "$CONFIG" \

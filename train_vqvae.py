@@ -30,7 +30,7 @@ from models.text_vqvae import TextVQVAE
 from utils.checkpoint import (find_resume_ckpt, load_checkpoint, restore_rng_states,
                               save_checkpoint)
 from utils.config import load_config, resolved_out_dir, save_config
-from utils.evaluation import evaluate
+from utils.evaluation import evaluate, evaluate_padded, segment_coupling_probe
 from utils.logging import JsonlLogger, log_line
 from utils.metrics import codebook_stats, ema_cluster_stats, ppl_from_ce, token_accuracy
 
@@ -84,6 +84,28 @@ def infinite_batches(loader, sampler):
             sampler.set_epoch(epoch)
         yield from loader
         epoch += 1
+
+
+def apply_var_len(ids: torch.Tensor, labels: torch.Tensor, p: float, lo: int,
+                  pad_id: int):
+    """Variable-length window augmentation: with per-sample prob p keep only
+    the LAST L tokens (L ~ log-uniform[lo, N]) and left-pad with pad_id.
+    Content keeps its absolute (right-aligned) positions — the same layout the
+    planner prefix uses at inference (prompt tail against the continuation
+    boundary). Returns (ids, labels, attention_mask); mask is None when no
+    sample was cropped."""
+    B, N = ids.shape
+    sel = torch.rand(B, device=ids.device) < p
+    if not bool(sel.any()):
+        return ids, labels, None
+    u = torch.rand(B, device=ids.device)
+    L = (lo * (N / lo) ** u).round().long().clamp(lo, N)
+    pad_upto = torch.where(sel, N - L, torch.zeros_like(L))   # pad [0, pad_upto)
+    pos = torch.arange(N, device=ids.device).unsqueeze(0)
+    pad_region = pos < pad_upto.unsqueeze(1)
+    ids = ids.masked_fill(pad_region, pad_id)
+    labels = labels.masked_fill(pad_region, -100)
+    return ids, labels, (~pad_region).long()
 
 
 class ScaleWindow:
@@ -251,6 +273,10 @@ def main():
             mask = batch.get("attention_mask")
             if mask is not None:
                 mask = mask.to(device, non_blocking=True)
+            elif cfg.train.var_len_p > 0:
+                ids, labels, mask = apply_var_len(
+                    ids, labels, cfg.train.var_len_p, cfg.train.var_len_lo,
+                    cfg.train.var_len_pad_id)
             sync_ctx = model.no_sync() if ddp and m < n_accum - 1 else nullcontext()
             with sync_ctx:
                 with ac():
@@ -308,8 +334,16 @@ def main():
                 and step % cfg.train.eval_interval == 0):
             res = evaluate(raw, val_loader, device, autocast_dtype=autocast_dtype,
                            max_batches=cfg.train.eval_batches, truncation=True)
-            eval_log.log({"step": step, "split": "val", "full": res["full"],
-                          "truncation": res["truncation"], "per_scale": res["per_scale"]})
+            rec = {"step": step, "split": "val", "full": res["full"],
+                   "truncation": res["truncation"], "per_scale": res["per_scale"]}
+            if cfg.train.eval_pad_lens:
+                rec["padded"] = evaluate_padded(
+                    raw, val_loader, device, cfg.train.eval_pad_lens,
+                    cfg.train.var_len_pad_id, autocast_dtype=autocast_dtype)
+            if cfg.train.eval_segment_probe and cfg.quantizer.pq_segments > 0:
+                rec["segment_probe"] = segment_coupling_probe(
+                    raw, val_loader, device, autocast_dtype=autocast_dtype)
+            eval_log.log(rec)
             model.train()
             t_last = time.time()  # exclude eval wall time from tokens/s
 

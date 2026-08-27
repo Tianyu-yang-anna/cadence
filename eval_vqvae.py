@@ -19,13 +19,16 @@ from data.wikitext import build_dataloader
 from models.text_vqvae import TextVQVAE
 from utils.checkpoint import find_resume_ckpt, load_checkpoint
 from utils.config import load_config, resolved_out_dir
-from utils.evaluation import evaluate
+from utils.evaluation import evaluate, evaluate_padded, segment_coupling_probe
 from utils.logging import log_line
 from utils.metrics import ema_cluster_stats
 
 
 def jaccard_overlap(scale_counts: list[torch.Tensor], scales: list[int]) -> list[dict]:
-    used = [set(torch.nonzero(c > 0).flatten().tolist()) for c in scale_counts]
+    # PQ counts are [S, N]; flatten to segment-major entry ids so "used set"
+    # stays well-defined for both classic and PQ codebooks
+    used = [set(torch.nonzero(c.reshape(-1) > 0).flatten().tolist())
+            for c in scale_counts]
     out = []
     for i in range(len(used)):
         for j in range(i + 1, len(used)):
@@ -134,6 +137,13 @@ def main():
         "per_scale": res["per_scale"],
         "code_overlap_jaccard": jaccard_overlap(res["scale_counts"], model.msrvq.scales),
     }
+    if getattr(cfg.train, "eval_pad_lens", None):
+        report["padded"] = evaluate_padded(
+            model, loader, device, cfg.train.eval_pad_lens,
+            cfg.train.var_len_pad_id, autocast_dtype=autocast_dtype)
+    if cfg.quantizer.pq_segments > 0:
+        report["segment_probe"] = segment_coupling_probe(
+            model, loader, device, autocast_dtype=autocast_dtype)
     if cfg.quantizer.shared_codebook:
         from utils.metrics import codebook_stats
         global_counts = torch.stack(res["scale_counts"]).sum(0)

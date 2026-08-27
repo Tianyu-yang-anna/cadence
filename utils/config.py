@@ -56,7 +56,12 @@ class PhiConfig:
 @dataclass
 class QuantizerConfig:
     scales: list[int] = field(default_factory=lambda: [1, 2, 4, 256])
-    codebook_size: int = 8192
+    codebook_size: int = 8192       # with pq_segments > 0: PER-SEGMENT size N
+    # product quantization (ConceptLM-style, arXiv 2602.08984): split the
+    # code vector into S equal slices, each with its own codebook of
+    # codebook_size entries; effective per-position vocab = size**segments.
+    # 0 = off (single classic codebook, backward compatible with all old ckpts)
+    pq_segments: int = 0
     shared_codebook: bool = True
     lookup: str = "l2"              # l2 | cosine
     ema_decay: float = 0.99
@@ -92,6 +97,17 @@ class TrainConfig:
     bypass_vq_steps: int = 5000     # quantization bypassed (identity) for the first steps
     bypass_ema_warmup: bool = True  # shadow-EMA the codebook during bypass
     scale_dropout_p: float = 0.0
+    # variable-length window augmentation (tokenizer only): with prob p, keep
+    # only the LAST L tokens of the window (L ~ log-uniform[lo, seq_len]) and
+    # left-pad with pad_id — matches the planner-prefix inference layout
+    # (prompt right-aligned against the continuation boundary, EOT pad on the
+    # left), so padded-prompt encoding is in-distribution
+    var_len_p: float = 0.0
+    var_len_lo: int = 16
+    var_len_pad_id: int = 50256     # GPT-2 eos/eot
+    # periodic-eval extras: padded-window recon buckets + PQ segment probe
+    eval_pad_lens: list[int] = field(default_factory=list)
+    eval_segment_probe: bool = False
     log_interval: int = 50
     eval_interval: int = 1000
     eval_batches: int = 100

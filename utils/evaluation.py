@@ -32,6 +32,115 @@ def _finalize(bucket: dict) -> dict:
 
 
 @torch.no_grad()
+def evaluate_padded(model, loader, device, lens: list[int], pad_id: int,
+                    autocast_dtype=None, max_batches: int = 10):
+    """Padded-window recon by kept-length bucket: keep only the LAST L tokens
+    of each window (left-pad with pad_id, planner-prefix layout) and measure
+    recon on the kept region. This is the pad-OOD gate: a tokenizer trained
+    with var_len augmentation should hold recon accuracy at every L."""
+    was_training = model.training
+    model.eval()
+
+    def ac():
+        if autocast_dtype is not None:
+            return torch.autocast(device_type=device.type, dtype=autocast_dtype)
+        return nullcontext()
+
+    buckets = {L: {"ce_sum": 0.0, "correct": 0, "total": 0} for L in lens}
+    for bi, batch in enumerate(loader):
+        if max_batches and bi >= max_batches:
+            break
+        ids0 = batch["input_ids"].to(device)
+        if batch.get("attention_mask") is not None:
+            continue  # only meaningful on full contiguous windows
+        N = ids0.shape[1]
+        for L in lens:
+            if L >= N:
+                continue
+            ids = ids0.clone()
+            labels = ids0.clone()
+            ids[:, :N - L] = pad_id
+            labels[:, :N - L] = -100
+            mask = torch.zeros_like(ids)
+            mask[:, N - L:] = 1
+            with ac():
+                out = model(ids, attention_mask=mask, labels=None,
+                            update_codebook=False)
+            _accumulate(buckets[L], out.logits, labels)
+
+    if was_training:
+        model.train()
+    return [{"kept_len": L, **_finalize(buckets[L])} for L in lens]
+
+
+@torch.no_grad()
+def segment_coupling_probe(model, loader, device, autocast_dtype=None,
+                           max_batches: int = 5):
+    """PQ risk probe: how much does INTRA-POSITION cross-segment coupling
+    matter at the finest scale? For each segment s, replace its finest-scale
+    codes with another sample's (roll across batch) keeping every marginal
+    intact, decode, and measure recon-acc drop vs the untouched codes. The
+    'all_independent' row rolls every segment differently — the worst-case
+    proxy for a planner that samples segments independently."""
+    msrvq = model.msrvq
+    S = msrvq.pq_segments
+    assert S > 0, "segment probe requires a PQ quantizer"
+    was_training = model.training
+    model.eval()
+
+    def ac():
+        if autocast_dtype is not None:
+            return torch.autocast(device_type=device.type, dtype=autocast_dtype)
+        return nullcontext()
+
+    base = {"ce_sum": 0.0, "correct": 0, "total": 0}
+    per_seg = [{"ce_sum": 0.0, "correct": 0, "total": 0} for _ in range(S)]
+    all_ind = {"ce_sum": 0.0, "correct": 0, "total": 0}
+    kf = len(msrvq.scales) - 1  # finest scale index
+
+    for bi, batch in enumerate(loader):
+        if max_batches and bi >= max_batches:
+            break
+        ids = batch["input_ids"].to(device)
+        labels = batch["labels"].to(device)
+        if ids.shape[0] < 2:
+            continue
+        mask = batch.get("attention_mask")
+        if mask is not None:
+            mask = mask.to(device)
+        with ac():
+            z = model.encode(ids, mask)
+            ms = msrvq(z, update=False, mask=mask)
+            N = z.shape[1]
+            zq = msrvq.dequantize(ms.codes, N, mask)
+            _accumulate(base, model.decode_latent(zq, mask), labels)
+            for s in range(S):
+                codes_p = [c.clone() if k == kf else c for k, c in enumerate(ms.codes)]
+                codes_p[kf][:, :, s] = torch.roll(codes_p[kf][:, :, s], 1, dims=0)
+                zq_p = msrvq.dequantize(codes_p, N, mask)
+                _accumulate(per_seg[s], model.decode_latent(zq_p, mask), labels)
+            codes_a = [c.clone() if k == kf else c for k, c in enumerate(ms.codes)]
+            for s in range(S):
+                codes_a[kf][:, :, s] = torch.roll(codes_a[kf][:, :, s], s + 1, dims=0)
+            zq_a = msrvq.dequantize(codes_a, N, mask)
+            _accumulate(all_ind, model.decode_latent(zq_a, mask), labels)
+
+    if was_training:
+        model.train()
+    base_f = _finalize(base)
+    return {
+        "finest_scale": msrvq.scales[kf],
+        "base": base_f,
+        "per_segment": [
+            {"segment": s, **_finalize(per_seg[s]),
+             "acc_drop": base_f["token_acc"] - _finalize(per_seg[s])["token_acc"]}
+            for s in range(S)],
+        "all_independent": {**_finalize(all_ind),
+                            "acc_drop": base_f["token_acc"] - _finalize(all_ind)["token_acc"]},
+    }
+
+
+@torch.no_grad()
 def evaluate(model, loader, device, autocast_dtype=None, max_batches: int = 0,
              truncation: bool = True):
     """Returns {'full': {...}, 'truncation': [...], 'per_scale': [...],

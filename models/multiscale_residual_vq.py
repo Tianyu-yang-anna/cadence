@@ -21,14 +21,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.vq_ema import VQEMA
+from models.vq_ema import PQVQEMA, VQEMA
 
 
 @dataclass
 class MSRVQOut:
     z_q: torch.Tensor                 # [B, N, d] accumulated quantized latent
     contribs: list[torch.Tensor]      # per-scale upsampled contributions [B, N, d]
-    codes: list[torch.Tensor]         # per-scale indices [B, l_k]
+    codes: list[torch.Tensor]         # per-scale indices [B, l_k] ([B, l_k, S] with PQ)
     commit_loss: torch.Tensor         # mean over scales (equal per-scale weight)
     diagnostics: dict = field(default_factory=dict)
 
@@ -40,7 +40,8 @@ class MultiScaleResidualVQ(nn.Module):
                  upsample_mode: str = "nearest-exact",
                  revival_enabled: bool = True, revival_threshold: float = 1.0,
                  revival_interval: int = 100,
-                 phi_enabled: bool = False, phi_kernel: int = 3):
+                 phi_enabled: bool = False, phi_kernel: int = 3,
+                 pq_segments: int = 0):
         super().__init__()
         assert len(scales) >= 1
         assert list(scales) == sorted(scales), "scale schedule must be ascending"
@@ -48,18 +49,30 @@ class MultiScaleResidualVQ(nn.Module):
         self.scales = list(scales)
         self.shared_codebook = shared_codebook
         self.upsample_mode = upsample_mode
+        self.pq_segments = pq_segments
 
-        vq_kwargs = dict(codebook_size=codebook_size, code_dim=code_dim,
-                         decay=ema_decay, eps=ema_eps, lookup=lookup,
-                         revival_enabled=revival_enabled,
-                         revival_threshold=revival_threshold,
-                         revival_interval=revival_interval)
+        if pq_segments > 0:
+            # product quantization: codebook_size is the PER-SEGMENT size N
+            vq_kwargs = dict(codebook_size=codebook_size, code_dim=code_dim,
+                             segments=pq_segments,
+                             decay=ema_decay, eps=ema_eps, lookup=lookup,
+                             revival_enabled=revival_enabled,
+                             revival_threshold=revival_threshold,
+                             revival_interval=revival_interval)
+            vq_cls = PQVQEMA
+        else:
+            vq_kwargs = dict(codebook_size=codebook_size, code_dim=code_dim,
+                             decay=ema_decay, eps=ema_eps, lookup=lookup,
+                             revival_enabled=revival_enabled,
+                             revival_threshold=revival_threshold,
+                             revival_interval=revival_interval)
+            vq_cls = VQEMA
         if shared_codebook:
-            self.vq = VQEMA(**vq_kwargs)
+            self.vq = vq_cls(**vq_kwargs)
             self.vqs = None
         else:
             self.vq = None
-            self.vqs = nn.ModuleList([VQEMA(**vq_kwargs) for _ in self.scales])
+            self.vqs = nn.ModuleList([vq_cls(**vq_kwargs) for _ in self.scales])
 
         if phi_enabled:
             self.phi = nn.ModuleList([
@@ -79,9 +92,50 @@ class MultiScaleResidualVQ(nn.Module):
             return self.vq.pop_revived()
         return sum(vq.pop_revived() for vq in self.vqs)
 
-    def forward(self, z: torch.Tensor, bypass: bool = False, update: bool = True) -> MSRVQOut:
+    def dequantize(self, codes: list[torch.Tensor], seq_len: int,
+                   mask: torch.Tensor | None = None) -> torch.Tensor:
+        """codes -> accumulated latent z_q [B, seq_len, d] via the frozen
+        codebook(s), mirroring forward() exactly (upsample mode, phi, and the
+        same pad-masking of every contribution). This is THE dequant path the
+        planner interface must match (round-4 lesson: any deviation loses the
+        cross-scale signal)."""
+        assert len(codes) == len(self.scales)
+        mf = None if mask is None else mask.to(self.vq_for_scale(0).embed.dtype).unsqueeze(-1)
+        z_q = None
+        for k, l in enumerate(self.scales):
+            vq = self.vq_for_scale(k)
+            if self.pq_segments > 0:
+                q = vq.dequantize(codes[k])                     # [B, l, d]
+            else:
+                q = vq.embed[codes[k]]                          # [B, l, d]
+            if l == seq_len:
+                u = q
+            else:
+                q_t = q.transpose(1, 2)
+                if self.upsample_mode == "linear":
+                    u = F.interpolate(q_t, size=seq_len, mode="linear", align_corners=False)
+                else:
+                    u = F.interpolate(q_t, size=seq_len, mode="nearest-exact")
+                u = u.transpose(1, 2)
+            if self.phi is not None:
+                u = u + self.phi[k](u.transpose(1, 2)).transpose(1, 2)
+            if mf is not None:
+                u = u * mf
+            z_q = u if z_q is None else z_q + u
+        return z_q
+
+    def forward(self, z: torch.Tensor, bypass: bool = False, update: bool = True,
+                mask: torch.Tensor | None = None) -> MSRVQOut:
+        # mask: optional [B, N], 1 = real token, 0 = padding. The latent is
+        # zeroed at pad positions and every per-scale contribution is masked
+        # the same way, so the decomposition invariant holds on z*mask and pad
+        # never leaks into pooled bucket means, EMA stats, or commit loss.
         B, N, d = z.shape
         assert self.scales[-1] <= N, f"finest scale {self.scales[-1]} > latent length {N}"
+        mf = None
+        if mask is not None:
+            mf = mask.to(z.dtype).unsqueeze(-1)                 # [B, N, 1]
+            z = z * mf
         residual = z
         accumulated = torch.zeros_like(z)
         contribs: list[torch.Tensor] = []
@@ -91,11 +145,22 @@ class MultiScaleResidualVQ(nn.Module):
 
         for k, l in enumerate(self.scales):
             e_before = residual.detach().float().pow(2).mean()
+            bucket_valid = None
             if l == N:
                 pooled = residual
-            else:
+                if mask is not None:
+                    bucket_valid = mask.bool()
+            elif mask is None:
                 pooled = F.adaptive_avg_pool1d(residual.transpose(1, 2), l).transpose(1, 2)
-            out = self.vq_for_scale(k)(pooled, update=update, bypass=bypass)
+            else:
+                # masked bucket mean: pool(residual)/pool(mask); residual is
+                # already zero at pad, so this is exact; all-pad buckets -> 0
+                num = F.adaptive_avg_pool1d(residual.transpose(1, 2), l).transpose(1, 2)
+                den = F.adaptive_avg_pool1d(mf.transpose(1, 2), l).transpose(1, 2)
+                pooled = num / den.clamp_min(1e-8)
+                bucket_valid = den.squeeze(-1) > 0
+            out = self.vq_for_scale(k)(pooled, update=update, bypass=bypass,
+                                       ema_mask=bucket_valid)
             if l == N:
                 u = out.quantized
             else:
@@ -107,6 +172,8 @@ class MultiScaleResidualVQ(nn.Module):
                 u = u.transpose(1, 2)
             if self.phi is not None:
                 u = u + self.phi[k](u.transpose(1, 2)).transpose(1, 2)
+            if mf is not None:
+                u = u * mf  # pad positions receive nothing at every scale
             accumulated = accumulated + u
             residual = residual - u
             e_after = residual.detach().float().pow(2).mean()
