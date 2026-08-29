@@ -129,7 +129,8 @@ def main():
         d_model=cfg.planner.d_model, n_layers=cfg.planner.n_layers,
         n_heads=cfg.planner.n_heads, ffn_mult=cfg.planner.ffn_mult,
         rope_theta=cfg.planner.rope_theta,
-        upsample_mode=tok_quant_cfg.upsample_mode).to(device)
+        upsample_mode=tok_quant_cfg.upsample_mode,
+        cond_drop_p=cfg.planner.cond_drop_p).to(device)
     n_params = sum(p.numel() for p in planner.parameters() if p.requires_grad)
     n_tok = sum(p.numel() for p in tokenizer.parameters())
     if is_main:
@@ -162,7 +163,8 @@ def main():
         ckpt_path = find_resume_ckpt(out_dir) if args.resume == "auto" else args.resume
         if ckpt_path and Path(str(ckpt_path)).exists():
             payload = load_checkpoint(ckpt_path, map_location=device)
-            raw.load_state_dict(payload["model"])
+            from models.prefix_planner import load_prefix_planner_state
+            load_prefix_planner_state(raw, payload["model"])
             if payload.get("optimizer"):
                 optimizer.load_state_dict(payload["optimizer"])
             if payload.get("scheduler"):

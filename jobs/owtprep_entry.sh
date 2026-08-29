@@ -1,8 +1,11 @@
 #!/bin/bash
 # Track 2 data prep: OpenWebText slice (GPT-2 BPE bins) + TextLDM benchmarks.
-# Env: MAX_TOKENS (default 4e9), DATA_OUT (default owt_gpt2).
+# Env: MAX_TOKENS (default 4e9), DATA_OUT (default owt_gpt2), SOURCE (optional
+# explicit HF dataset — REQUIRED for OWT2 runs to prevent the default
+# candidate list silently falling back to OWT1 on a mirror failure).
 MAX_TOKENS="${MAX_TOKENS:-4e9}"
 DATA_OUT="${DATA_OUT:-owt_gpt2}"
+SOURCE="${SOURCE:-}"
 export JOB_TAG="owtprep"
 source "$(dirname "${BASH_SOURCE[0]}")/bootstrap.sh"
 
@@ -22,7 +25,8 @@ log "preparing OWT slice ($MAX_TOKENS tokens) -> $OUT"
 PUSH_PID=$!
 if [ "$SKIP_OWT" != "1" ]; then
   (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_owt.py \
-      --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT") >> "$LOG_LOCAL" 2>&1
+      --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT" \
+      ${SOURCE:+--source "$SOURCE"}) >> "$LOG_LOCAL" 2>&1
   rc=$?
   push_log
   [ $rc -ne 0 ] && { kill "$PUSH_PID" 2>/dev/null; log "OWT prep FAILED rc=$rc"; exit $rc; }

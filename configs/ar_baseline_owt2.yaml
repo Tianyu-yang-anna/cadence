@@ -1,0 +1,37 @@
+# Controlled-comparison wave (2026-08-29): AR baseline on OpenWebText2 at the
+# unified 12L x 768 x 12h trunk and the 2B-token budget. Training sequences
+# are [window t || window t+1] (2 x 1024); the CE covers the continuation
+# half only, so loss tokens = 256 x 1024 x 7630 steps = 2.0B — the same
+# accounting as the prefix planner (prefix conditions, target trains).
+run_name: ar_owt2
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 1024            # per window; training sequences are 2x this
+  d_model: 768
+  decoder: {num_layers: 12, num_heads: 12, ffn_mult: 4}
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/owt2_gpt2
+  num_workers: 4
+planner:
+  codes_dir: ""            # AR consumes raw tokens; no codes needed
+  tokenizer_run_dir: ""
+  doc_aware: true
+train:
+  max_steps: 7630
+  batch_size: 256
+  micro_batch_size: 4      # seq 2048
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 400
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  bf16: true
+  log_interval: 50
+  eval_interval: 500
+  eval_batches: 30
+  save_interval: 1000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

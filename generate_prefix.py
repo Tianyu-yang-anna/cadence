@@ -62,6 +62,8 @@ def main():
     ap.add_argument("--temp_schedule", default="")
     ap.add_argument("--topk_schedule", default="")
     ap.add_argument("--topp_schedule", default="")
+    ap.add_argument("--cfg", type=float, default=1.0)
+    ap.add_argument("--cfg_schedule", default="")
     ap.add_argument("--max_prompt_tokens", type=int, default=0,
                     help="0 = the tokenizer window (the whole prompt fits)")
     ap.add_argument("--chain_cap", type=int, default=4)
@@ -92,7 +94,8 @@ def main():
         n_heads=cfg.planner.n_heads, ffn_mult=cfg.planner.ffn_mult,
         rope_theta=cfg.planner.rope_theta,
         upsample_mode=tok_quant_cfg.upsample_mode).to(device)
-    planner.load_state_dict(payload["model"])
+    from models.prefix_planner import load_prefix_planner_state
+    load_prefix_planner_state(planner, payload["model"])
     planner.eval()
     log_line(f"prefix planner {ckpt_path} (step {payload.get('step')}) | "
              f"tokenizer {tok_ckpt}")
@@ -102,6 +105,7 @@ def main():
     temps = _schedule(args.temp_schedule, args.temperature, K)
     topks = _schedule(args.topk_schedule, args.top_k, K, cast=int)
     topps = _schedule(args.topp_schedule, args.top_p, K)
+    cfgs = _schedule(args.cfg_schedule, args.cfg, K)
     max_prompt = args.max_prompt_tokens or seq_len
 
     gen_rng = torch.Generator(device=device).manual_seed(args.seed)
@@ -120,7 +124,7 @@ def main():
         prefix_e = ms.z_q.float()
         _, f_hat = planner.generate(prefix_e, prefix_mask=mask,
                                     temperature=temps, top_k=topks, top_p=topps,
-                                    generator=generator)
+                                    cfg_scale=cfgs, generator=generator)
         with ac():
             logits = tokenizer.decode_latent(f_hat.to(
                 next(tokenizer.decoder.parameters()).dtype))
@@ -129,7 +133,7 @@ def main():
     rows = [json.loads(l)
             for l in Path(args.benchmark).read_text().splitlines()][: args.n]
     log_line(f"benchmark {args.benchmark}: {len(rows)} rows "
-             f"(T={temps}, top_p={topps}, top_k={topks}, no CFG)")
+             f"(T={temps}, top_p={topps}, top_k={topks}, cfg={cfgs})")
     run_benchmark(rows, detok, gen_window, seq_len, args.out,
                   max_prompt_tokens=max_prompt, chain_cap=args.chain_cap,
                   device=device, base_seed=args.seed)
