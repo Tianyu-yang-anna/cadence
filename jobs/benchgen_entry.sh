@@ -9,7 +9,9 @@ BENCHMARKS="${BENCHMARKS:-tinystories lm1b wikipedia wikisource}"
 N="${N:-1000}"
 TEMP="${TEMP:-0.8}"
 TOPP="${TOPP:-0.9}"
-CFG_W="${CFG_W:-3.0}"
+# default resolved per generator branch: 3.0 for generate.py (STAR planner),
+# 1.0 for generate_prefix.py (CFG only valid on cond_drop-trained ckpts)
+CFG_W="${CFG_W-}"
 TEMP_SCHEDULE="${TEMP_SCHEDULE:-}"   # per-scale comma lists; override scalars
 TOPP_SCHEDULE="${TOPP_SCHEDULE:-}"
 CFG_SCHEDULE="${CFG_SCHEDULE:-}"
@@ -41,6 +43,14 @@ case "${SCHED_PRESET:-}" in
           TOPP_SCHEDULE="0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.7,0.5,0.4,0.3" ;;
   pflat)  TEMP_SCHEDULE="0.8,0.8,0.8,0.8,0.8,0.8,0.8,0.8,0.8,0.8,0.8"
           TOPP_SCHEDULE="0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9" ;;
+  # CFG-on presets for cond_drop-trained prefix planners (2026-08-29 wave):
+  # winner shapes of the 26B runs + the flagship-era CFG taper
+  p5cold3) TEMP_SCHEDULE="1.2,1.1,1.1,1.0,0.9,0.8,0.7,0.6,0.4,0.2,0.05"
+           TOPP_SCHEDULE="0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.7,0.5,0.4,0.3"
+           CFG_SCHEDULE="3,3,3,3,3,3,3,3,2,1.5,1.5" ;;
+  p5hot3)  TEMP_SCHEDULE="1.6,1.5,1.4,1.2,1.1,1.0,0.8,0.7,0.5,0.3,0.1"
+           TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4"
+           CFG_SCHEDULE="3,3,3,3,3,3,3,3,2,1.5,1.5" ;;
 esac
 BEST_OF="${BEST_OF:-1}"              # best-of-N reranking (1 = off)
 RERANK_SCORER="${RERANK_SCORER:-}"   # optional scorer override (gpt2-large)
@@ -93,17 +103,21 @@ for b in $BENCHMARKS; do
   [ -n "$TEMP_SCHEDULE" ] && SCHED="$SCHED --temp_schedule $TEMP_SCHEDULE"
   [ -n "$TOPP_SCHEDULE" ] && SCHED="$SCHED --topp_schedule $TOPP_SCHEDULE"
   if [ "$GEN_SCRIPT" = "generate_prefix.py" ]; then
-    # prefix planner: no CFG, no best-of, no refine args
+    # prefix planner: CFG supported since the 2026-08-29 restoration; no
+    # best-of, no refine args. Default cfg=1.0 (exact single-branch) — CFG>1
+    # is only meaningful on cond_drop-trained checkpoints.
+    [ -n "$CFG_SCHEDULE" ] && SCHED="$SCHED --cfg_schedule $CFG_SCHEDULE"
     run_step "generate $b" bash -c \
       "cd '$CODE' && '$PY' generate_prefix.py --config '$CONFIG' \
         --set 'run_name=$PLANNER_FULL' --set 'planner.tokenizer_run_dir=$LOCAL_ROOT/runs/$TOK_FULL' --benchmark '$BDIR/$b.jsonl' --n '$N' \
-        --temperature '$TEMP' --top_p '$TOPP' $SCHED \
+        --temperature '$TEMP' --top_p '$TOPP' --cfg '${CFG_W:-1.0}' $SCHED \
         --out '$OUT/gens_${b}${TAG}.jsonl'" \
       && run_step "eval $b" "$PY" "$CODE/eval_generation.py" \
           --gen "$OUT/gens_${b}${TAG}.jsonl"
     push_log
     continue
   fi
+  CFG_W="${CFG_W:-3.0}"
   [ -n "$REFINE" ] && SCHED="$SCHED --refine_scales ${REFINE%%:*} --refine_steps ${REFINE##*:}"
   [ -n "$CFG_SCHEDULE" ] && SCHED="$SCHED --cfg_schedule $CFG_SCHEDULE"
   run_step "generate $b" bash -c \
