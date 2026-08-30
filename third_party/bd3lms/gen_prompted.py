@@ -104,7 +104,12 @@ def run(config):
     n = int(config.prompted.get('n', 1000))
     shard = int(config.prompted.get('shard', 0))
     nshards = int(config.prompted.get('nshards', 1))
-    num_steps = int(config.prompted.get('num_steps', config.algo.T))
+    num_steps = int(config.prompted.get('num_steps', config.algo.T) or 0)
+    if num_steps <= 0:
+        # algo.T == 0 means continuous time in the upstream configs; the
+        # denoise loop needs a finite step budget (first_hitting exits
+        # early once the stride is fully unmasked)
+        num_steps = 1024
     rows = [json.loads(l) for l in bench.read_text().splitlines()][:n]
     rows = rows[shard::nshards]
 
