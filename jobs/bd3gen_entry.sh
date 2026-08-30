@@ -62,6 +62,8 @@ for b in $BENCHMARKS; do
         "data.train=binwindows:$BINS" "data.valid=binwindows:$BINS" \
         data.insert_train_special=False data.insert_valid_special=False \
         data.insert_valid_eos=False mode=sample_eval \
+        loader.batch_size=1 loader.global_batch_size=1 \
+        loader.eval_batch_size=1 loader.eval_global_batch_size=1 \
         "eval.checkpoint_path=$CKDIR/last.ckpt" \
         "+prompted.benchmark=$BDIR/$b.jsonl" \
         "+prompted.out=$OUT/shard_${b}_$s.jsonl" \
