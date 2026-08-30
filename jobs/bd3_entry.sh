@@ -22,6 +22,7 @@ ensure_data || { log "ABORT: data"; exit 1; }
 # bd3lms pin); installs into the node-local venv copy — never the Volume
 "$PY" -m pip install --quiet lightning==2.5.0.post0 hydra-core==1.3.2 \
     omegaconf==2.3.0 torchmetrics==1.6.2 einops==0.8.1 timm==0.9.16 \
+    rich==13.7.1 pandas==2.2.1 scikit-learn==1.5.1 wandb \
     || { log "ABORT: pip deps"; exit 1; }
 
 FULL_RUN_NAME="${FULL_NAME:-bd3_$RUN_NAME}"
@@ -49,6 +50,7 @@ BINS="$LOCAL_ROOT/data/${DATA_NAME:-owt2_gpt2}"
 (cd "$CODE/third_party/bd3lms" && env WANDB_MODE=disabled HYDRA_FULL_ERROR=1 \
     "$PY" -u main.py \
     model=small algo="$ALGO" block_size="$BLOCK_SIZE" model.length=1024 \
+    model.attn_backend=flex \
     data=openwebtext-split \
     "data.train=binwindows:$BINS" "data.valid=binwindows:$BINS" \
     data.insert_train_special=False data.insert_valid_special=False \
