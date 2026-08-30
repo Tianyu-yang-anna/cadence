@@ -264,7 +264,8 @@ def main():
         log_line(f"best_of={args.best_of} reranking with {args.rerank_scorer}")
 
     if args.benchmark:
-        assert args.backend == "planner", "--benchmark supports backend=planner only"
+        assert args.backend in ("planner", "ar"), \
+            "--benchmark supports backend=planner|ar"
         from contextlib import nullcontext as _nc
 
         def _ac():
@@ -273,16 +274,26 @@ def main():
 
         assert oracle_scales is None, "--oracle_scales needs window-mode GT codes"
 
-        def gen_window(cur, generator=gen_rng):
-            with _ac():
-                feats = prompt_enc(cur)
-            codes = planner.generate(feats.float(), temperature=temp_arg,
-                                     top_k=topk_arg, top_p=topp_arg,
-                                     cfg_scale=cfg_arg, generator=generator,
-                                     prompt_mask=None)  # equal-length prompts,
-            # unpadded (B=1, or best_of copies of the same prompt)
-            return decode_codes(tokenizer_model, codes, scales, seq_len,
-                                tok_quant.upsample_mode, autocast_dtype)
+        if args.backend == "ar":
+            assert args.best_of == 1, "AR benchmark path has no reranking"
+
+            def gen_window(cur, generator=gen_rng):
+                with _ac():
+                    return ar.generate(cur, seq_len,
+                                       temperature=args.temperature,
+                                       top_k=args.top_k, top_p=args.top_p,
+                                       generator=generator)
+        else:
+            def gen_window(cur, generator=gen_rng):
+                with _ac():
+                    feats = prompt_enc(cur)
+                codes = planner.generate(feats.float(), temperature=temp_arg,
+                                         top_k=topk_arg, top_p=topp_arg,
+                                         cfg_scale=cfg_arg, generator=generator,
+                                         prompt_mask=None)  # equal-length prompts,
+                # unpadded (B=1, or best_of copies of the same prompt)
+                return decode_codes(tokenizer_model, codes, scales, seq_len,
+                                    tok_quant.upsample_mode, autocast_dtype)
 
         rows = [json.loads(l)
                 for l in Path(args.benchmark).read_text().splitlines()][: args.n]
