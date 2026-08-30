@@ -96,8 +96,23 @@ def main():
             "source": name, "splits": {}}
     docs_buf: list[str] = []
 
+    # pathological-document guards (two preps died at the same ~9B-token
+    # stream position): cap doc length before tokenizing, and never let one
+    # poison batch kill a multi-hour streaming run — fall back to per-doc
+    # encoding and skip the offender.
+    MAX_DOC_CHARS = 500_000  # ~125k tokens, far beyond any window need
+
     def encode_batch(texts):
-        enc = tokenizer(texts, add_special_tokens=False)["input_ids"]
+        try:
+            enc = tokenizer(texts, add_special_tokens=False)["input_ids"]
+        except Exception as e:  # noqa: BLE001
+            print(f"WARN: batch encode failed ({e}); retrying per-doc", flush=True)
+            enc = []
+            for t in texts:
+                try:
+                    enc.append(tokenizer(t, add_special_tokens=False)["input_ids"])
+                except Exception as e2:  # noqa: BLE001
+                    print(f"WARN: skipping poison doc ({e2})", flush=True)
         return [np.asarray(ids + [sep_id], dtype=np.uint16) for ids in enc]
 
     for split in splits:  # default order keeps held-out splits first
@@ -113,7 +128,7 @@ def main():
                         row = next(stream)
                     except StopIteration:
                         break
-                    text = row.get("text") or ""
+                    text = (row.get("text") or "")[:MAX_DOC_CHARS]
                     if text.strip():
                         docs_buf.append(text)
                 if not docs_buf:
@@ -124,7 +139,8 @@ def main():
                     n_docs += 1
                 docs_buf.clear()
                 if split == "train" and n_docs % 51200 < args.batch_docs:
-                    print(f"train: {total/1e9:.2f}B/{target/1e9:.1f}B tokens", flush=True)
+                    print(f"train: {total/1e9:.2f}B/{target/1e9:.1f}B tokens "
+                          f"({n_docs} docs)", flush=True)
         meta["splits"][split] = {"n_docs": n_docs, "n_tokens": total}
         print(f"{split}: {n_docs} docs, {total} tokens", flush=True)
     with open(out / "meta.json", "w") as f:
