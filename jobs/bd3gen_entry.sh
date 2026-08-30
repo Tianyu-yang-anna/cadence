@@ -23,6 +23,7 @@ ensure_env || { log "ABORT: env"; exit 1; }
 ensure_data || { log "ABORT: data"; exit 1; }
 "$PY" -m pip install --quiet lightning==2.5.0.post0 hydra-core==1.3.2 \
     omegaconf==2.3.0 torchmetrics==1.6.2 einops==0.8.1 timm==0.9.16 \
+    rich==13.7.1 pandas==2.2.1 scikit-learn==1.5.1 wandb \
     || { log "ABORT: pip deps"; exit 1; }
 
 # restore benchmark jsonls + checkpoint
