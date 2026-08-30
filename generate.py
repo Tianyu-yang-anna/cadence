@@ -175,6 +175,9 @@ def main():
     ap.add_argument("--chain_cap", type=int, default=4,
                     help="max windows chained per benchmark row")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--shard", type=int, default=0,
+                    help="benchmark-mode row shard index (rows[shard::nshards])")
+    ap.add_argument("--nshards", type=int, default=1)
     ap.add_argument("--best_of", type=int, default=1,
                     help="sample N candidates per prompt and keep the lowest "
                          "scorer NLL (planner backend only)")
@@ -297,6 +300,11 @@ def main():
 
         rows = [json.loads(l)
                 for l in Path(args.benchmark).read_text().splitlines()][: args.n]
+        if args.nshards > 1:
+            # worker sharding (one process per GPU); shards concat downstream.
+            # Seed the generator per shard so streams differ across workers.
+            rows = rows[args.shard::args.nshards]
+            gen_rng.manual_seed(args.seed * 1000 + args.shard)
         log_line(f"benchmark {args.benchmark}: {len(rows)} rows "
                  f"(T={temp_arg}, top_p={topp_arg}, cfg={cfg_arg})")
         run_benchmark(rows, detok, gen_window, seq_len, args.out,

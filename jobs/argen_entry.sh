@@ -40,15 +40,29 @@ mkdir -p "$OUT"
 PUSH_PID=$!
 trap 'kill "$PUSH_PID" "$HB_PID" 2>/dev/null' EXIT
 
+NSHARDS=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')
+[ "${NSHARDS:-0}" -ge 1 ] || NSHARDS=1
 rc_all=0
 for b in $BENCHMARKS; do
-  log "generate $b (AR, T=1.0 top_p=0.95)"
-  # shellcheck disable=SC2086
-  (cd "$CODE" && "$PY" generate.py --backend ar --config "$CONFIG" \
-      --set "run_name=$FULL_NAME" --benchmark "$BDIR/$b.jsonl" --n "$N" \
-      --temperature 1.0 --top_p 0.95 --max_prompt_tokens 1024 \
-      --out "$OUT/gens_${b}${TAG}.jsonl" $EXTRA_ARGS) >> "$LOG_LOCAL" 2>&1 \
-      || { log "generate $b FAILED"; rc_all=1; push_log; continue; }
+  log "generate $b (AR, T=1.0 top_p=0.95, $NSHARDS shards)"
+  pids=()
+  for s in $(seq 0 $((NSHARDS - 1))); do
+    # shellcheck disable=SC2086
+    (cd "$CODE" && env CUDA_VISIBLE_DEVICES=$s "$PY" generate.py \
+        --backend ar --config "$CONFIG" \
+        --set "run_name=$FULL_NAME" --benchmark "$BDIR/$b.jsonl" --n "$N" \
+        --temperature 1.0 --top_p 0.95 --max_prompt_tokens 1024 \
+        --shard "$s" --nshards "$NSHARDS" \
+        --out "$OUT/shard_${b}_$s.jsonl" $EXTRA_ARGS) >> "$LOG_LOCAL.g$s" 2>&1 &
+    pids+=($!)
+  done
+  rc=0
+  for p in "${pids[@]}"; do wait "$p" || rc=1; done
+  cat "$LOG_LOCAL".g* >> "$LOG_LOCAL" 2>/dev/null; rm -f "$LOG_LOCAL".g*
+  push_log
+  if [ $rc -ne 0 ]; then log "generate $b FAILED (a shard died)"; rc_all=1; continue; fi
+  cat "$OUT"/shard_${b}_*.jsonl > "$OUT/gens_${b}${TAG}.jsonl"
+  rm -f "$OUT"/shard_${b}_*.jsonl
   (cd "$CODE" && "$PY" eval_generation.py --gen "$OUT/gens_${b}${TAG}.jsonl") \
       >> "$LOG_LOCAL" 2>&1 || { log "eval $b FAILED"; rc_all=1; }
   push_log
