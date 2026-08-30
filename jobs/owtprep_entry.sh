@@ -38,10 +38,39 @@ while True:
     torch.cuda.synchronize()
     time.sleep(4)' >> "$LOG_LOCAL" 2>&1 &
   KEEPALIVE_PID=$!
-  (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_owt.py \
-      --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT" \
-      ${SOURCE:+--source "$SOURCE"} ${MATERIALIZE:+--materialize}) >> "$LOG_LOCAL" 2>&1
-  rc=$?
+  if [ -n "${MATERIALIZE:-}" ]; then
+    # 4 sequential FRESH PROCESSES over doc-index quarters: a memory leak
+    # proportional to tokens processed OOM-killed four single-process preps
+    # at ~8.2-9.0B tokens (streaming AND materialized, wall time 55min-2.5h —
+    # position-correlated, no traceback = external SIGKILL). Each quarter is
+    # ~3.2B tokens, far below the ceiling; leak dies with the process.
+    rc=0
+    for RANGE in "0:3300000" "3300000:6600000" "6600000:9900000" "9900000:99999999"; do
+      part="${RANGE%%:*}"
+      SPLITS="train"; [ "$part" = "0" ] && SPLITS="val,test,train"
+      log "prep part docs [$RANGE) splits=$SPLITS"
+      (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_owt.py \
+          --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT" \
+          --splits "$SPLITS" --source "$SOURCE" --materialize \
+          --doc_range "$RANGE") >> "$LOG_LOCAL" 2>&1
+      rc=$?
+      push_log
+      [ $rc -ne 0 ] && break
+      mv "$OUT/train.bin" "$OUT/train_part_$part.bin"
+      [ "$part" = "0" ] && cp -f "$OUT/meta.json" "$OUT/meta_part0.json"
+    done
+    if [ $rc -eq 0 ]; then
+      log "concatenating train parts"
+      cat "$OUT"/train_part_*.bin > "$OUT/train.bin" && rm -f "$OUT"/train_part_*.bin
+      mv -f "$OUT/meta_part0.json" "$OUT/meta.json"
+      rc=$?
+    fi
+  else
+    (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_owt.py \
+        --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT" \
+        ${SOURCE:+--source "$SOURCE"}) >> "$LOG_LOCAL" 2>&1
+    rc=$?
+  fi
   kill "$KEEPALIVE_PID" 2>/dev/null
   push_log
   [ $rc -ne 0 ] && { kill "$PUSH_PID" 2>/dev/null; log "OWT prep FAILED rc=$rc"; exit $rc; }

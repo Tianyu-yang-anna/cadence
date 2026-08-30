@@ -29,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 C4_TRAIN_FILES = 1024
 
 
-def doc_stream(source: str, data_files_range: str = "", materialize: bool = False):
+def doc_stream(source: str, data_files_range: str = "", materialize: bool = False,
+               doc_range: str = ""):
     from datasets import load_dataset
     if materialize:
         # Streaming this mirror dies after ~2-2.5h regardless of stream
@@ -41,7 +42,15 @@ def doc_stream(source: str, data_files_range: str = "", materialize: bool = Fals
         name, _, config = source.partition(":")
         args = (name, config) if config else (name,)
         ds = load_dataset(*args, split="train")
-        print(f"materialized {source}: {len(ds)} docs", flush=True)
+        n_total = len(ds)
+        if doc_range:
+            a, b = (int(x) for x in doc_range.split(":"))
+            b = min(b, n_total)
+            assert 0 <= a < b <= n_total, f"bad --doc_range {doc_range}"
+            ds = ds.select(range(a, b))
+            print(f"materialized {source}: docs [{a}:{b}) of {n_total}", flush=True)
+        else:
+            print(f"materialized {source}: {n_total} docs", flush=True)
         return source, iter(ds)
     if data_files_range:
         name, _, config = source.partition(":")
@@ -83,6 +92,11 @@ def main():
     ap.add_argument("--materialize", action="store_true",
                     help="download the full dataset once and iterate locally "
                          "(mmap arrow) instead of streaming")
+    ap.add_argument("--doc_range", default="",
+                    help='"A:B" doc-index slice of the materialized dataset; '
+                         "used to bound per-process work (a leak proportional "
+                         "to tokens processed OOM-kills single-process preps "
+                         "at ~8.5B tokens). Requires --materialize.")
     ap.add_argument("--splits", default="val,test,train",
                     help="comma list; shard jobs pass 'train' (val/test come "
                          "from shard 0)")
@@ -100,8 +114,10 @@ def main():
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    assert not args.doc_range or args.materialize, "--doc_range needs --materialize"
     name, stream = doc_stream(args.source, args.data_files_range,
-                              materialize=args.materialize)
+                              materialize=args.materialize,
+                              doc_range=args.doc_range)
 
     budgets = {"val": int(args.val_tokens), "test": int(args.test_tokens),
                "train": int(args.max_tokens)}
