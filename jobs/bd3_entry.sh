@@ -8,6 +8,7 @@
 : "${RUN_NAME:?RUN_NAME env var is required}"
 ALGO="${ALGO:-bd3lm}"
 BLOCK_SIZE="${BLOCK_SIZE:-16}"
+ATTN_BACKEND="${ATTN_BACKEND:-flex}"  # flex only supports bd3lm; mdlm/ar use sdpa
 MAX_STEPS="${MAX_STEPS:-7630}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 export JOB_TAG="bd3-$RUN_NAME"
@@ -50,7 +51,7 @@ BINS="$LOCAL_ROOT/data/${DATA_NAME:-owt2_gpt2}"
 (cd "$CODE/third_party/bd3lms" && env WANDB_MODE=disabled HYDRA_FULL_ERROR=1 \
     "$PY" -u main.py \
     model=small algo="$ALGO" block_size="$BLOCK_SIZE" model.length=1024 \
-    model.attn_backend=flex \
+    model.attn_backend="$ATTN_BACKEND" \
     data=openwebtext-split \
     "data.train=binwindows:$BINS" "data.valid=binwindows:$BINS" \
     data.insert_train_special=False data.insert_valid_special=False \
