@@ -9,6 +9,7 @@
 : "${FULL_NAME:?FULL_NAME env var is required}"
 ALGO="${ALGO:-bd3lm}"
 BLOCK_SIZE="${BLOCK_SIZE:-16}"
+ATTN_BACKEND="${ATTN_BACKEND:-flex}"  # must match training (mdlm=sdpa)
 BENCHMARKS="${BENCHMARKS:-wikipedia wikisource tinystories lm1b}"
 N="${N:-1000}"
 TAG="${TAG:-}"
@@ -55,6 +56,7 @@ for b in $BENCHMARKS; do
         HYDRA_FULL_ERROR=1 CUDA_VISIBLE_DEVICES=$s \
         "$PY" -u gen_prompted.py \
         model=small algo="$ALGO" block_size="$BLOCK_SIZE" model.length=1024 \
+        model.attn_backend="$ATTN_BACKEND" \
         data=openwebtext-split \
         "data.train=binwindows:$BINS" "data.valid=binwindows:$BINS" \
         data.insert_train_special=False data.insert_valid_special=False \
