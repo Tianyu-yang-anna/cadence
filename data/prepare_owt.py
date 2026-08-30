@@ -29,8 +29,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 C4_TRAIN_FILES = 1024
 
 
-def doc_stream(source: str, data_files_range: str = ""):
+def doc_stream(source: str, data_files_range: str = "", materialize: bool = False):
     from datasets import load_dataset
+    if materialize:
+        # Streaming this mirror dies after ~2-2.5h regardless of stream
+        # position (three OWT2 preps lost at 8.2-9.0B tokens; leak/connection
+        # decay in the long-lived parquet stream). Materialize instead:
+        # download once, iterate the memory-mapped arrow table locally —
+        # constant RAM, no network in the hot loop.
+        assert source and not data_files_range
+        name, _, config = source.partition(":")
+        args = (name, config) if config else (name,)
+        ds = load_dataset(*args, split="train")
+        print(f"materialized {source}: {len(ds)} docs", flush=True)
+        return source, iter(ds)
     if data_files_range:
         name, _, config = source.partition(":")
         assert name and config, \
@@ -68,6 +80,9 @@ def main():
                     help='HF dataset override, "name" or "name:config"')
     ap.add_argument("--data_files_range", default="",
                     help='"A:B": stream only C4 train files [A,B) of 1024')
+    ap.add_argument("--materialize", action="store_true",
+                    help="download the full dataset once and iterate locally "
+                         "(mmap arrow) instead of streaming")
     ap.add_argument("--splits", default="val,test,train",
                     help="comma list; shard jobs pass 'train' (val/test come "
                          "from shard 0)")
@@ -85,7 +100,8 @@ def main():
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    name, stream = doc_stream(args.source, args.data_files_range)
+    name, stream = doc_stream(args.source, args.data_files_range,
+                              materialize=args.materialize)
 
     budgets = {"val": int(args.val_tokens), "test": int(args.test_tokens),
                "train": int(args.max_tokens)}

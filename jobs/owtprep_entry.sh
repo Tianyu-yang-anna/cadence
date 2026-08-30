@@ -40,7 +40,7 @@ while True:
   KEEPALIVE_PID=$!
   (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_owt.py \
       --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT" \
-      ${SOURCE:+--source "$SOURCE"}) >> "$LOG_LOCAL" 2>&1
+      ${SOURCE:+--source "$SOURCE"} ${MATERIALIZE:+--materialize}) >> "$LOG_LOCAL" 2>&1
   rc=$?
   kill "$KEEPALIVE_PID" 2>/dev/null
   push_log
