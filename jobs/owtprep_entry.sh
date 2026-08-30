@@ -24,10 +24,25 @@ log "preparing OWT slice ($MAX_TOKENS tokens) -> $OUT"
 ( while true; do sleep 120; cp -f "$LOG_LOCAL" "$VOL/logs/$JOB_TAG.log" 2>/dev/null || true; done ) &
 PUSH_PID=$!
 if [ "$SKIP_OWT" != "1" ]; then
+  # GPU keepalive: prep is CPU-only and the platform reaps jobs for "Low Gpu
+  # utilization" (killed the first OWT2 prep at 8.7B tokens after ~2h idle).
+  # A low-duty matmul loop (~10%) keeps the GPU registered as active without
+  # stealing tokenizer CPU threads.
+  "$PY" -c '
+import time, torch
+a = torch.randn(4096, 4096, device="cuda")
+while True:
+    for _ in range(60):
+        a = a @ a
+        a = a / a.norm().clamp_min(1e-6)
+    torch.cuda.synchronize()
+    time.sleep(4)' >> "$LOG_LOCAL" 2>&1 &
+  KEEPALIVE_PID=$!
   (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_owt.py \
       --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT" \
       ${SOURCE:+--source "$SOURCE"}) >> "$LOG_LOCAL" 2>&1
   rc=$?
+  kill "$KEEPALIVE_PID" 2>/dev/null
   push_log
   [ $rc -ne 0 ] && { kill "$PUSH_PID" 2>/dev/null; log "OWT prep FAILED rc=$rc"; exit $rc; }
   mkdir -p "$VOL/data/$DATA_OUT"
