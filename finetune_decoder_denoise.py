@@ -114,6 +114,43 @@ def perturb_codes(codes: list[torch.Tensor], eps: list[float], knn: torch.Tensor
     return out
 
 
+def build_knn_tables_pq(msrvq, k: int = 8) -> list[torch.Tensor]:
+    """Per-scale [S, N, k] L2 nearest neighbors inside each segment codebook
+    (PQ quantizer; shared books simply repeat across scales)."""
+    tables = []
+    for kk in range(len(msrvq.scales)):
+        books = msrvq.vq_for_scale(kk).embed          # [S, N, d_seg]
+        S, N, _ = books.shape
+        t = torch.stack([build_knn_table(books[s], k=k) for s in range(S)])
+        tables.append(t)                              # [S, N, k]
+    return tables
+
+
+def perturb_codes_pq(codes: list[torch.Tensor], eps: list[float],
+                     knn_pq: list[torch.Tensor], seg_vocab: int,
+                     generator: torch.Generator | None = None) -> list[torch.Tensor]:
+    """PQ variant of perturb_codes: codes[k] is [B, l, S]; each (position,
+    segment) element flips independently with prob eps_k to 50% uniform /
+    50% a within-segment kNN neighbor — segment-wise noise matches how the
+    planner actually errs (independent segment sampling)."""
+    assert len(codes) == len(eps)
+    out = []
+    for c, e, kt in zip(codes, eps, knn_pq):
+        if e <= 0.0:
+            out.append(c)
+            continue
+        kw = dict(device=c.device, generator=generator)
+        S, N, kk = kt.shape
+        flip = torch.rand(c.shape, **kw) < e
+        uniform = torch.randint(0, seg_vocab, c.shape, **kw)
+        offs = c + torch.arange(S, device=c.device) * N
+        pick = torch.randint(0, kk, c.shape, **kw)
+        neighbor = kt.reshape(S * N, kk).to(c.device)[offs, pick]
+        repl = torch.where(torch.rand(c.shape, **kw) < 0.5, uniform, neighbor)
+        out.append(torch.where(flip, repl, c))
+    return out
+
+
 def flatten_codes(codes: list[torch.Tensor]) -> torch.Tensor:
     return torch.cat([c.reshape(c.shape[0], -1) for c in codes], dim=1)
 
@@ -184,11 +221,16 @@ def evaluate_denoise(model: TextVQVAE, loader, device, eps: list[float],
         with ac():
             z = model.encode(ids, mask)
             ms = model.msrvq(z, update=False)
+        pq = getattr(model.msrvq, "pq_segments", 0) > 0
         variants = {"clean": ms.codes,
-                    "perturbed": perturb_codes(ms.codes, eps, knn, codebook_size,
-                                               generator=gen)}
+                    "perturbed": (perturb_codes_pq(ms.codes, eps, knn,
+                                                   codebook_size, generator=gen)
+                                  if pq else
+                                  perturb_codes(ms.codes, eps, knn, codebook_size,
+                                                generator=gen))}
         for name, codes in variants.items():
-            z_q = rebuild_z_q(codes, scales, codebook, seq_len, upsample_mode)
+            z_q = (model.msrvq.dequantize(codes, seq_len) if pq else
+                   rebuild_z_q(codes, scales, codebook, seq_len, upsample_mode))
             with ac():
                 logits = model.decode_latent(z_q, mask)
             _accumulate(buckets[name], logits, labels)
@@ -249,15 +291,20 @@ def main():
     model.load_state_dict(payload["model"])
     assert model.msrvq.phi is None, \
         "code rebuild uses accumulated_init_latent, which assumes phi off"
-    assert cfg.quantizer.shared_codebook, \
-        "denoise finetune assumes the shared codebook (knn table + rebuild)"
+    IS_PQ = cfg.quantizer.pq_segments > 0
+    assert IS_PQ or cfg.quantizer.shared_codebook, \
+        "classic path assumes the shared codebook (knn table + rebuild)"
 
     scales = model.msrvq.scales
     seq_len = cfg.model.seq_len
-    codebook_size = cfg.quantizer.codebook_size
-    codebook = model.msrvq.vq.embed          # frozen fp32 buffer
+    codebook_size = cfg.quantizer.codebook_size   # per-segment N when PQ
     eps = parse_eps(args.eps, len(scales))
-    knn = build_knn_table(codebook, k=args.knn_k)
+    if IS_PQ:
+        codebook = None
+        knn = build_knn_tables_pq(model.msrvq, k=args.knn_k)
+    else:
+        codebook = model.msrvq.vq.embed          # frozen fp32 buffer
+        knn = build_knn_table(codebook, k=args.knn_k)
 
     trainable = freeze_for_decoder_finetune(model)
     n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -325,10 +372,15 @@ def main():
                     z = model.encode(ids, mask)
                     ms = model.msrvq(z, update=False)   # frozen: no EMA update
                 dirty = bool(torch.rand(()).item() < args.p_dirty)
-                codes = (perturb_codes(ms.codes, eps, knn, codebook_size)
-                         if dirty else ms.codes)
-                dec_in = rebuild_z_q(codes, scales, codebook, seq_len,
-                                     cfg.quantizer.upsample_mode)
+                if dirty:
+                    codes = (perturb_codes_pq(ms.codes, eps, knn, codebook_size)
+                             if IS_PQ else
+                             perturb_codes(ms.codes, eps, knn, codebook_size))
+                else:
+                    codes = ms.codes
+                dec_in = (model.msrvq.dequantize(codes, seq_len) if IS_PQ else
+                          rebuild_z_q(codes, scales, codebook, seq_len,
+                                      cfg.quantizer.upsample_mode))
             with ac():
                 logits = model.decode_latent(dec_in, mask)
             recon = F.cross_entropy(
