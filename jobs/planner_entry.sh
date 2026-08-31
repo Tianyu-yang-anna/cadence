@@ -16,6 +16,22 @@ log "planner train run=$RUN_NAME config=$CONFIG codes=$CODES_NAME tok=${TOK_FULL
 ensure_env || { log "ABORT: env"; exit 1; }
 ensure_data || { log "ABORT: data"; exit 1; }
 
+# SRC_FULL: optional source-planner run to restore locally (finetune scripts
+# load their base checkpoint from runs/$SRC_FULL, e.g. MaskGIT visible-path)
+if [ -n "${SRC_FULL:-}" ]; then
+  SRC_DIR="$LOCAL_ROOT/runs/$SRC_FULL"
+  SVCK="$VOL/checkpoints/$SRC_FULL"
+  mkdir -p "$SRC_DIR"
+  latest=""
+  [ -f "$SVCK/latest.txt" ] && latest=$(tr -d '[:space:]' < "$SVCK/latest.txt")
+  if [ -z "$latest" ] || [ ! -f "$SVCK/$latest" ]; then
+    latest=$(cd "$SVCK" 2>/dev/null && ls ckpt_step*.pt 2>/dev/null | sort -V | tail -1)
+  fi
+  [ -n "$latest" ] && [ -f "$SVCK/$latest" ] || { log "no SRC ckpt in $SVCK"; exit 1; }
+  cp -f "$SVCK/$latest" "$SRC_DIR/$latest"
+  printf '%s\n' "$latest" > "$SRC_DIR/latest.txt"
+fi
+
 # restore codes npy
 CODES_DIR="$LOCAL_ROOT/data/$CODES_NAME"
 mkdir -p "$CODES_DIR"

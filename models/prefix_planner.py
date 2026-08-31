@@ -104,6 +104,14 @@ class PrefixVARPlanner(nn.Module):
         # position for dropped samples (created unconditionally so ckpts are
         # shape-stable whether or not CFG is used)
         self.null_prefix = nn.Parameter(torch.zeros(self.d_code))
+        # MaskGIT visible-code pathway (same design as the STAR-era planner):
+        # reveals a subset of a scale's TRUE codes at that scale's own input
+        # positions. The GATE is zero-init so tanh(gate)=0 makes the pathway
+        # contribute exactly 0 until finetuned; visible_proj keeps the 0.02
+        # init (zeroing both factors would be a saddle the finetune could
+        # never leave). Base checkpoints load via load_prefix_planner_state.
+        self.visible_proj = nn.Linear(self.d_code, d_model)
+        self.visible_gate = nn.Parameter(torch.zeros(()))
         self.map_proj = nn.Linear(self.d_code, d_model)
         self.scale_emb = nn.Embedding(K, d_model)
         self.blocks = nn.ModuleList([
@@ -153,6 +161,29 @@ class PrefixVARPlanner(nn.Module):
                 acc = acc + u.transpose(1, 2)
             start += l
         return acc
+
+    def dequant_ladder(self, codes_flat: torch.Tensor) -> torch.Tensor:
+        """[B, sum(scales), S] -> per-position dequantized vectors
+        [B, sum(scales), d_code] in ladder layout (NO upsampling/accumulation
+        — this is the visible-pathway embedding, one vector per ladder slot)."""
+        outs, start = [], 0
+        for k, l in enumerate(self.scales):
+            outs.append(self.dequant_scale(codes_flat[:, start:start + l], k))
+            start += l
+        return torch.cat(outs, dim=1)
+
+    def _add_visible(self, x_target: torch.Tensor, visible_codes: torch.Tensor,
+                     visible_mask: torch.Tensor) -> torch.Tensor:
+        """Add gate * proj(dequant(code)) at the TARGET positions that predict
+        the code (ladder layout, x_target excludes the prefix; may be a
+        generation prefix of the ladder). Runs for any non-None mask (even
+        all-False, contributing exact 0) so the pathway parameters always
+        enter the autograd graph — DDP reducer rule."""
+        L = x_target.shape[1]
+        emb = self.visible_proj(
+            self.dequant_ladder(visible_codes[:, :L]).to(x_target.dtype))
+        gate = torch.tanh(self.visible_gate).to(x_target.dtype)
+        return x_target + gate * emb * visible_mask[:, :L, None].to(x_target.dtype)
 
     def build_input_maps(self, codes_flat: torch.Tensor) -> torch.Tensor:
         """Teacher-forcing inputs for blocks 2..K from GT PQ codes:
@@ -205,9 +236,13 @@ class PrefixVARPlanner(nn.Module):
         return m[:, None]
 
     def _assemble(self, prefix_e: torch.Tensor, input_maps: torch.Tensor,
-                  ref_dtype: torch.dtype) -> torch.Tensor:
+                  ref_dtype: torch.dtype,
+                  visible_codes: torch.Tensor | None = None,
+                  visible_mask: torch.Tensor | None = None) -> torch.Tensor:
         """[prefix] + [start block (l_1)] + projected input maps + embeddings.
-        input_maps may be a generation prefix (fewer blocks)."""
+        input_maps may be a generation prefix (fewer blocks). The optional
+        MaskGIT visible pathway adds revealed-code embeddings at target
+        positions (ladder layout, applied before the prefix concat)."""
         B, P = prefix_e.shape[0], prefix_e.shape[1]
         device = prefix_e.device
         xp = self.prefix_proj(prefix_e.to(ref_dtype)) + self.prefix_emb.to(ref_dtype)
@@ -218,6 +253,9 @@ class PrefixVARPlanner(nn.Module):
         sid = torch.cat([torch.full((l,), k, device=device, dtype=torch.long)
                          for k, l in enumerate(self.scales)])
         xt = xt + self.scale_emb(sid[:xt.shape[1]])[None]
+        if visible_mask is not None:
+            assert visible_codes is not None
+            xt = self._add_visible(xt, visible_codes, visible_mask)
         return torch.cat([xp, xt], dim=1)
 
     def _trunk(self, x: torch.Tensor, P: int,
@@ -262,7 +300,9 @@ class PrefixVARPlanner(nn.Module):
 
     def forward(self, codes_flat: torch.Tensor, prefix_e: torch.Tensor,
                 prefix_mask: torch.Tensor | None = None,
-                cond_drop: torch.Tensor | None = None) -> torch.Tensor:
+                cond_drop: torch.Tensor | None = None,
+                visible_codes: torch.Tensor | None = None,
+                visible_mask: torch.Tensor | None = None) -> torch.Tensor:
         """Teacher-forced logits [B, sum(scales), S, N].
 
         codes_flat: [B, sum(scales), S] ground-truth PQ codes;
@@ -280,7 +320,8 @@ class PrefixVARPlanner(nn.Module):
                 prefix_e, prefix_mask, cond_drop)
         with torch.no_grad():
             input_maps = self.build_input_maps(codes_flat)
-        x = self._assemble(prefix_e, input_maps, self.map_proj.weight.dtype)
+        x = self._assemble(prefix_e, input_maps, self.map_proj.weight.dtype,
+                           visible_codes, visible_mask)
         h = self._trunk(x, P, prefix_mask)
         return self._head_logits(h[:, P:])
 
@@ -295,7 +336,9 @@ class PrefixVARPlanner(nn.Module):
                  cfg_scale: float | list[float] = 1.0,
                  generator: torch.Generator | None = None,
                  forced_codes: torch.Tensor | None = None,
-                 forced_scales: list[int] | None = None):
+                 forced_scales: list[int] | None = None,
+                 refine_scales: list[int] | None = None,
+                 refine_steps: int = 0):
         """Next-scale sampling; K forwards, segments sampled INDEPENDENTLY
         within a position (the known PQ risk — depth-AR is the planned
         fallback if the segment-coupling probe bites). cfg_scale w != 1 runs
@@ -318,12 +361,61 @@ class PrefixVARPlanner(nn.Module):
                 forced_codes.shape[1] == sum(self.scales), \
                 "forced_scales requires forced_codes [B, sum(scales), S]"
         ref_dtype = self.map_proj.weight.dtype
+        refine = set(refine_scales or []) if refine_steps > 0 else set()
         null_e = null_mask = None
         if any(c != 1.0 for k, c in enumerate(cfgs) if k not in forced):
             null_e = self.null_prefix.to(prefix_e.dtype)[None, None, :].expand(
                 B, P, -1)
             null_mask = torch.ones(B, P, dtype=torch.bool, device=device) \
                 if prefix_mask is not None else None
+
+        def _block_logits(maps, k, vis_c=None, vis_m=None):
+            """Cond(+CFG-mixed) logits for block k given prefix maps; the
+            visible pathway is input-side so it feeds BOTH branches (same
+            rule as the input maps)."""
+            x = self._assemble(prefix_e, maps, ref_dtype, vis_c, vis_m)
+            h = self._trunk(x, P, prefix_mask)
+            logits = self._head_logits(h[:, P:])
+            if cfgs[k] != 1.0:
+                xu = self._assemble(null_e, maps, ref_dtype, vis_c, vis_m)
+                hu = self._trunk(xu, P, null_mask)
+                logits_u = self._head_logits(hu[:, P:])
+                logits = logits_u + cfgs[k] * (logits - logits_u)
+            return logits
+
+        def _refine_scale(maps, k, seg_start, l):
+            """MaskGIT-style K-pass refinement of scale k (PQ codes): pass 0
+            samples everything in parallel; each later pass re-samples only
+            the lowest-confidence POSITIONS (all S segments together) with
+            the committed rest revealed through the visible pathway.
+            Confidence = mean over segments of log p(sampled code)."""
+            K = refine_steps
+            cur = torch.zeros(B, l, self.segments, dtype=torch.long, device=device)
+            committed = torch.zeros(B, l, dtype=torch.bool, device=device)
+            L_ladder = seg_start + l
+            vis_c = torch.zeros(B, L_ladder, self.segments, dtype=torch.long,
+                                device=device)
+            vis_m = torch.zeros(B, L_ladder, dtype=torch.bool, device=device)
+            for j in range(K):
+                vis_c[:, seg_start:] = cur
+                vis_m[:, seg_start:] = committed
+                logits = _block_logits(maps, k, vis_c, vis_m)
+                blk = logits[:, seg_start:seg_start + l] / max(temps[k], 1e-6)
+                flat = blk.reshape(B, l * self.segments, self.seg_vocab)
+                sampled = _sample(flat, top_ks[k], top_ps[k], generator).view(
+                    B, l, self.segments)
+                logp = blk.float().log_softmax(-1)
+                lp_pos = logp.gather(-1, sampled[..., None]).squeeze(-1).mean(-1)
+                cur = torch.where(committed[..., None], cur, sampled)
+                if j == K - 1:
+                    break
+                conf = torch.where(committed,
+                                   torch.full_like(lp_pos, float("inf")), lp_pos)
+                n_open = max(1, int(l * math.cos(math.pi / 2 * (j + 1) / K)))
+                reopen = conf.topk(n_open, dim=-1, largest=False).indices
+                committed = torch.ones(B, l, dtype=torch.bool, device=device)
+                committed.scatter_(1, reopen, False)
+            return cur
 
         f_hat = torch.zeros(B, self.seq_len, self.d_code, device=device)
         maps_so_far: list[torch.Tensor] = []
@@ -341,18 +433,14 @@ class PrefixVARPlanner(nn.Module):
             else:
                 maps = (torch.cat(maps_so_far, dim=1) if maps_so_far
                         else torch.zeros(B, 0, self.d_code, device=device))
-                x = self._assemble(prefix_e, maps, ref_dtype)
-                h = self._trunk(x, P, prefix_mask)
-                logits = self._head_logits(h[:, P:])            # [B, L_pref, S, N]
-                if cfgs[k] != 1.0:
-                    xu = self._assemble(null_e, maps, ref_dtype)
-                    hu = self._trunk(xu, P, null_mask)
-                    logits_u = self._head_logits(hu[:, P:])
-                    logits = logits_u + cfgs[k] * (logits - logits_u)
-                blk = logits[:, seg_start:seg_start + l] / max(temps[k], 1e-6)
-                flat = blk.reshape(B, l * self.segments, self.seg_vocab)
-                codes_k = _sample(flat, top_ks[k], top_ps[k], generator).view(
-                    B, l, self.segments)
+                if k in refine:
+                    codes_k = _refine_scale(maps, k, seg_start, l)
+                else:
+                    logits = _block_logits(maps, k)             # [B, L_pref, S, N]
+                    blk = logits[:, seg_start:seg_start + l] / max(temps[k], 1e-6)
+                    flat = blk.reshape(B, l * self.segments, self.seg_vocab)
+                    codes_k = _sample(flat, top_ks[k], top_ps[k], generator).view(
+                        B, l, self.segments)
             codes_out.append(codes_k)
             e = self.dequant_scale(codes_k, k)
             if l == self.seq_len:
@@ -365,17 +453,18 @@ class PrefixVARPlanner(nn.Module):
         return torch.cat(codes_out, dim=1), f_hat
 
 
-# checkpoints saved before the CFG restoration (2026-08-29) lack exactly this
-# key; null_prefix only matters when cond_drop/cfg are used, so tolerant
-# loading is exact for plain sampling
-_CFG_KEYS = {"null_prefix"}
+# checkpoints may predate the CFG restoration (missing null_prefix, 2026-08-29)
+# and/or the MaskGIT visible pathway (missing visible_*, 2026-08-31); both are
+# exact-zero contributions until trained, so tolerant loading is exact
+_OPTIONAL_KEYS = {"null_prefix", "visible_proj.weight", "visible_proj.bias",
+                  "visible_gate"}
 
 
 def load_prefix_planner_state(planner, state_dict):
-    """strict=False load that tolerates ONLY a missing null_prefix key."""
+    """strict=False load tolerating ONLY the optional pathway keys."""
     missing, unexpected = planner.load_state_dict(state_dict, strict=False)
     assert not unexpected, f"unexpected keys in prefix-planner ckpt: {unexpected}"
-    assert set(missing) <= _CFG_KEYS, f"missing prefix-planner keys: {missing}"
+    assert set(missing) <= _OPTIONAL_KEYS, f"missing prefix-planner keys: {missing}"
     return planner
 
 

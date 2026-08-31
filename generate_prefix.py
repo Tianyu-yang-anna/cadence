@@ -64,6 +64,9 @@ def main():
     ap.add_argument("--topp_schedule", default="")
     ap.add_argument("--cfg", type=float, default=1.0)
     ap.add_argument("--cfg_schedule", default="")
+    ap.add_argument("--refine_scales", default="",
+                    help="comma list of scale INDICES for MaskGIT refinement")
+    ap.add_argument("--refine_steps", type=int, default=0)
     ap.add_argument("--max_prompt_tokens", type=int, default=0,
                     help="0 = the tokenizer window (the whole prompt fits)")
     ap.add_argument("--chain_cap", type=int, default=4)
@@ -106,6 +109,10 @@ def main():
     topks = _schedule(args.topk_schedule, args.top_k, K, cast=int)
     topps = _schedule(args.topp_schedule, args.top_p, K)
     cfgs = _schedule(args.cfg_schedule, args.cfg, K)
+    refine_scales = ([int(x) for x in args.refine_scales.split(",")]
+                     if args.refine_scales else None)
+    if refine_scales is not None:
+        assert args.refine_steps > 0, "--refine_scales requires --refine_steps"
     max_prompt = args.max_prompt_tokens or seq_len
 
     gen_rng = torch.Generator(device=device).manual_seed(args.seed)
@@ -124,7 +131,9 @@ def main():
         prefix_e = ms.z_q.float()
         _, f_hat = planner.generate(prefix_e, prefix_mask=mask,
                                     temperature=temps, top_k=topks, top_p=topps,
-                                    cfg_scale=cfgs, generator=generator)
+                                    cfg_scale=cfgs, generator=generator,
+                                    refine_scales=refine_scales,
+                                    refine_steps=args.refine_steps)
         with ac():
             logits = tokenizer.decode_latent(f_hat.to(
                 next(tokenizer.decoder.parameters()).dtype))

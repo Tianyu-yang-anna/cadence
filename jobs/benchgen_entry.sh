@@ -116,10 +116,12 @@ for b in $BENCHMARKS; do
   [ -n "$TEMP_SCHEDULE" ] && SCHED="$SCHED --temp_schedule $TEMP_SCHEDULE"
   [ -n "$TOPP_SCHEDULE" ] && SCHED="$SCHED --topp_schedule $TOPP_SCHEDULE"
   if [ "$GEN_SCRIPT" = "generate_prefix.py" ]; then
-    # prefix planner: CFG supported since the 2026-08-29 restoration; no
-    # best-of, no refine args. Default cfg=1.0 (exact single-branch) — CFG>1
-    # is only meaningful on cond_drop-trained checkpoints.
+    # prefix planner: CFG (2026-08-29) and MaskGIT refinement (2026-08-31,
+    # REFINE='scales:K', wired for real this time) supported; no best-of.
+    # Default cfg=1.0 (exact single-branch) — CFG>1 only meaningful on
+    # cond_drop-trained checkpoints; refine needs a visible-pathway finetune.
     [ -n "$CFG_SCHEDULE" ] && SCHED="$SCHED --cfg_schedule $CFG_SCHEDULE"
+    [ -n "$REFINE" ] && SCHED="$SCHED --refine_scales ${REFINE%%:*} --refine_steps ${REFINE##*:}"
     run_step "generate $b" bash -c \
       "cd '$CODE' && '$PY' generate_prefix.py --config '$CONFIG' \
         --set 'run_name=$PLANNER_FULL' --set 'planner.tokenizer_run_dir=$LOCAL_ROOT/runs/$TOK_FULL' --benchmark '$BDIR/$b.jsonl' --n '$N' \
