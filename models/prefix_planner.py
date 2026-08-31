@@ -112,6 +112,15 @@ class PrefixVARPlanner(nn.Module):
         # never leave). Base checkpoints load via load_prefix_planner_state.
         self.visible_proj = nn.Linear(self.d_code, d_model)
         self.visible_gate = nn.Parameter(torch.zeros(()))
+        # depth-AR segment heads (2026-09-01): segment s is predicted from
+        # state_s = h + sum_{t<s} depth_projs[t](e_t) — intra-position
+        # chain over segments, killing the independent-sampling assumption.
+        # ZERO-INIT projs make the whole pathway an exact no-op (states == h,
+        # logits identical to the independent heads), so existing checkpoints
+        # load unchanged and a light finetune teaches the chain. Inference
+        # adds only S tiny head steps per scale — trunk NFE unchanged.
+        self.depth_projs = nn.ModuleList([
+            nn.Linear(self.d_code // S, d_model) for _ in range(S)])
         self.map_proj = nn.Linear(self.d_code, d_model)
         self.scale_emb = nn.Embedding(K, d_model)
         self.blocks = nn.ModuleList([
@@ -134,6 +143,11 @@ class PrefixVARPlanner(nn.Module):
         for blk in self.blocks:
             nn.init.normal_(blk.proj.weight, std=0.02 * res_scale)
             nn.init.normal_(blk.mlp[2].weight, std=0.02 * res_scale)
+        # AFTER the generic init loop: depth projs must start as exact zero
+        # (the no-op guarantee; the finetune's head slices break the saddle)
+        for proj in self.depth_projs:
+            nn.init.zeros_(proj.weight)
+            nn.init.zeros_(proj.bias)
 
     # ---------------------------------------------------------------- dequant
 
@@ -268,6 +282,37 @@ class PrefixVARPlanner(nn.Module):
             x = blk(x, positions, mask)
         return self.ln_f(x)
 
+    def _depth_states(self, h_target: torch.Tensor,
+                      codes_flat: torch.Tensor) -> torch.Tensor:
+        """Teacher-forced depth-AR states [B, L, S, d_model]: state_s = h +
+        sum_{t<s} depth_projs[t](e_t(GT)). Zero projs -> states == h."""
+        B, L = h_target.shape[0], h_target.shape[1]
+        e = self.dequant_ladder(codes_flat[:, :L]).view(
+            B, L, self.segments, -1)
+        pe = torch.stack([self.depth_projs[s](e[:, :, s].to(h_target.dtype))
+                          for s in range(self.segments)], dim=2)
+        states = h_target.unsqueeze(2).repeat(1, 1, self.segments, 1)
+        states[:, :, 1:] += torch.cumsum(pe, dim=2)[:, :, :-1]
+        return states
+
+    def _head_logits_depth(self, h_target: torch.Tensor,
+                           codes_flat: torch.Tensor) -> torch.Tensor:
+        """[B, L, S, N] teacher-forced logits where segment s reads from its
+        depth state through ITS slice of the per-scale head (diagonal pick)."""
+        states = self._depth_states(h_target, codes_flat)
+        B, L = states.shape[0], states.shape[1]
+        S = self.segments
+        ar = torch.arange(S, device=h_target.device)
+        outs, start = [], 0
+        for k, l in enumerate(self.scales):
+            if start >= L:
+                break
+            st = states[:, start:min(start + l, L)]
+            o = self.heads[k](st).view(B, st.shape[1], S, S, self.seg_vocab)
+            outs.append(o[:, :, ar, ar])
+            start += l
+        return torch.cat(outs, dim=1)
+
     def _head_logits(self, h_target: torch.Tensor) -> torch.Tensor:
         """[B, L', d_model] target hidden states -> [B, L', S, N] logits
         (L' may be a ladder prefix)."""
@@ -323,7 +368,7 @@ class PrefixVARPlanner(nn.Module):
         x = self._assemble(prefix_e, input_maps, self.map_proj.weight.dtype,
                            visible_codes, visible_mask)
         h = self._trunk(x, P, prefix_mask)
-        return self._head_logits(h[:, P:])
+        return self._head_logits_depth(h[:, P:], codes_flat)
 
     # ------------------------------------------------------------ inference
 
@@ -369,26 +414,51 @@ class PrefixVARPlanner(nn.Module):
             null_mask = torch.ones(B, P, dtype=torch.bool, device=device) \
                 if prefix_mask is not None else None
 
-        def _block_logits(maps, k, vis_c=None, vis_m=None):
-            """Cond(+CFG-mixed) logits for block k given prefix maps; the
-            visible pathway is input-side so it feeds BOTH branches (same
-            rule as the input maps)."""
-            x = self._assemble(prefix_e, maps, ref_dtype, vis_c, vis_m)
-            h = self._trunk(x, P, prefix_mask)
-            logits = self._head_logits(h[:, P:])
+        def _block_hidden(pe_v, pm_v, maps, vis_c=None, vis_m=None):
+            """Trunk hidden states of the ladder prefix for one condition
+            branch; the visible pathway is input-side so callers feed it to
+            BOTH branches (same rule as the input maps)."""
+            x = self._assemble(pe_v, maps, ref_dtype, vis_c, vis_m)
+            return self._trunk(x, P, pm_v)[:, P:]
+
+        def _sample_block(maps, k, seg_start, l, vis_c=None, vis_m=None):
+            """Depth-AR sampling of block k: segment s is sampled from its
+            head slice on state_s = h + sum_{t<s} proj_t(e_t(sampled)); the
+            CFG null branch keeps its own state, updated with the SAME
+            sampled codes, and mixes at the logit level each step. Returns
+            (codes [B,l,S], per-position mean segment log-prob [B,l])."""
+            h_c = _block_hidden(prefix_e, prefix_mask, maps, vis_c, vis_m)
+            st_c = h_c[:, seg_start:seg_start + l]
+            st_u = None
             if cfgs[k] != 1.0:
-                xu = self._assemble(null_e, maps, ref_dtype, vis_c, vis_m)
-                hu = self._trunk(xu, P, null_mask)
-                logits_u = self._head_logits(hu[:, P:])
-                logits = logits_u + cfgs[k] * (logits - logits_u)
-            return logits
+                h_u = _block_hidden(null_e, null_mask, maps, vis_c, vis_m)
+                st_u = h_u[:, seg_start:seg_start + l]
+            S, N = self.segments, self.seg_vocab
+            books = self.codebooks[k]
+            segs, logps = [], []
+            for s in range(S):
+                lo = self.heads[k](st_c).view(B, l, S, N)[:, :, s]
+                if st_u is not None:
+                    lo_u = self.heads[k](st_u).view(B, l, S, N)[:, :, s]
+                    lo = lo_u + cfgs[k] * (lo - lo_u)
+                blk = lo / max(temps[k], 1e-6)
+                c_s = _sample(blk, top_ks[k], top_ps[k], generator)   # [B, l]
+                lp = blk.float().log_softmax(-1).gather(
+                    -1, c_s[..., None]).squeeze(-1)
+                pe_s = self.depth_projs[s](books[s][c_s].to(st_c.dtype))
+                st_c = st_c + pe_s
+                if st_u is not None:
+                    st_u = st_u + pe_s
+                segs.append(c_s)
+                logps.append(lp)
+            return (torch.stack(segs, dim=-1),
+                    torch.stack(logps, dim=-1).mean(-1))
 
         def _refine_scale(maps, k, seg_start, l):
-            """MaskGIT-style K-pass refinement of scale k (PQ codes): pass 0
-            samples everything in parallel; each later pass re-samples only
-            the lowest-confidence POSITIONS (all S segments together) with
-            the committed rest revealed through the visible pathway.
-            Confidence = mean over segments of log p(sampled code)."""
+            """MaskGIT-style K-pass refinement of scale k: pass 0 samples the
+            whole block (depth-AR within positions); each later pass
+            re-samples only the lowest-confidence POSITIONS with the
+            committed rest revealed through the visible pathway."""
             K = refine_steps
             cur = torch.zeros(B, l, self.segments, dtype=torch.long, device=device)
             committed = torch.zeros(B, l, dtype=torch.bool, device=device)
@@ -399,13 +469,8 @@ class PrefixVARPlanner(nn.Module):
             for j in range(K):
                 vis_c[:, seg_start:] = cur
                 vis_m[:, seg_start:] = committed
-                logits = _block_logits(maps, k, vis_c, vis_m)
-                blk = logits[:, seg_start:seg_start + l] / max(temps[k], 1e-6)
-                flat = blk.reshape(B, l * self.segments, self.seg_vocab)
-                sampled = _sample(flat, top_ks[k], top_ps[k], generator).view(
-                    B, l, self.segments)
-                logp = blk.float().log_softmax(-1)
-                lp_pos = logp.gather(-1, sampled[..., None]).squeeze(-1).mean(-1)
+                sampled, lp_pos = _sample_block(maps, k, seg_start, l,
+                                                vis_c, vis_m)
                 cur = torch.where(committed[..., None], cur, sampled)
                 if j == K - 1:
                     break
@@ -436,11 +501,7 @@ class PrefixVARPlanner(nn.Module):
                 if k in refine:
                     codes_k = _refine_scale(maps, k, seg_start, l)
                 else:
-                    logits = _block_logits(maps, k)             # [B, L_pref, S, N]
-                    blk = logits[:, seg_start:seg_start + l] / max(temps[k], 1e-6)
-                    flat = blk.reshape(B, l * self.segments, self.seg_vocab)
-                    codes_k = _sample(flat, top_ks[k], top_ps[k], generator).view(
-                        B, l, self.segments)
+                    codes_k, _ = _sample_block(maps, k, seg_start, l)
             codes_out.append(codes_k)
             e = self.dequant_scale(codes_k, k)
             if l == self.seq_len:
@@ -458,13 +519,16 @@ class PrefixVARPlanner(nn.Module):
 # exact-zero contributions until trained, so tolerant loading is exact
 _OPTIONAL_KEYS = {"null_prefix", "visible_proj.weight", "visible_proj.bias",
                   "visible_gate"}
+_OPTIONAL_PREFIXES = ("depth_projs.",)  # depth-AR heads (2026-09-01), zero-init
 
 
 def load_prefix_planner_state(planner, state_dict):
     """strict=False load tolerating ONLY the optional pathway keys."""
     missing, unexpected = planner.load_state_dict(state_dict, strict=False)
     assert not unexpected, f"unexpected keys in prefix-planner ckpt: {unexpected}"
-    assert set(missing) <= _OPTIONAL_KEYS, f"missing prefix-planner keys: {missing}"
+    bad = [m for m in missing if m not in _OPTIONAL_KEYS
+           and not m.startswith(_OPTIONAL_PREFIXES)]
+    assert not bad, f"missing prefix-planner keys: {bad}"
     return planner
 
 
