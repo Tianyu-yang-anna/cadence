@@ -51,6 +51,19 @@ case "${SCHED_PRESET:-}" in
   p5hot3)  TEMP_SCHEDULE="1.6,1.5,1.4,1.2,1.1,1.0,0.8,0.7,0.5,0.3,0.1"
            TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4"
            CFG_SCHEDULE="3,3,3,3,3,3,3,3,2,1.5,1.5" ;;
+  # CFG coefficient scan (w=5,7 ladders on the winner temperature shapes)
+  p5cold5) TEMP_SCHEDULE="1.2,1.1,1.1,1.0,0.9,0.8,0.7,0.6,0.4,0.2,0.05"
+           TOPP_SCHEDULE="0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.7,0.5,0.4,0.3"
+           CFG_SCHEDULE="5,5,5,5,5,5,5,5,3,2,1.5" ;;
+  p5cold7) TEMP_SCHEDULE="1.2,1.1,1.1,1.0,0.9,0.8,0.7,0.6,0.4,0.2,0.05"
+           TOPP_SCHEDULE="0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.7,0.5,0.4,0.3"
+           CFG_SCHEDULE="7,7,7,7,7,7,7,7,4,2,1.5" ;;
+  p5hot5)  TEMP_SCHEDULE="1.6,1.5,1.4,1.2,1.1,1.0,0.8,0.7,0.5,0.3,0.1"
+           TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4"
+           CFG_SCHEDULE="5,5,5,5,5,5,5,5,3,2,1.5" ;;
+  p5hot7)  TEMP_SCHEDULE="1.6,1.5,1.4,1.2,1.1,1.0,0.8,0.7,0.5,0.3,0.1"
+           TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4"
+           CFG_SCHEDULE="7,7,7,7,7,7,7,7,4,2,1.5" ;;
 esac
 BEST_OF="${BEST_OF:-1}"              # best-of-N reranking (1 = off)
 RERANK_SCORER="${RERANK_SCORER:-}"   # optional scorer override (gpt2-large)
