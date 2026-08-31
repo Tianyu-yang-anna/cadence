@@ -363,6 +363,13 @@ class PrefixVARPlanner(nn.Module):
         if cond_drop is not None:
             prefix_e, prefix_mask = self._apply_cond_drop(
                 prefix_e, prefix_mask, cond_drop)
+        if visible_mask is None and self.training:
+            # DDP reducer rule (find_unused_parameters=False): the visible
+            # pathway must enter the graph EVERY step. An all-False mask
+            # contributes an exact 0 while touching gate+proj.
+            visible_codes = codes_flat
+            visible_mask = torch.zeros(codes_flat.shape[0], codes_flat.shape[1],
+                                       dtype=torch.bool, device=codes_flat.device)
         with torch.no_grad():
             input_maps = self.build_input_maps(codes_flat)
         x = self._assemble(prefix_e, input_maps, self.map_proj.weight.dtype,
