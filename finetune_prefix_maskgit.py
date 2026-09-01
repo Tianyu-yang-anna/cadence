@@ -54,6 +54,14 @@ def main():
     ap.add_argument("--mask_scales", default="",
                     help="comma scale INDICES to refine-train (default: two finest)")
     ap.add_argument("--retain_weight", type=float, default=0.5)
+    ap.add_argument("--mask_mode", default="bernoulli",
+                    choices=["bernoulli", "chunk_prefix", "none"],
+                    help="bernoulli=MaskGIT random reveal; chunk_prefix=reveal "
+                         "the first m of --chunks contiguous chunks (chunk-AR "
+                         "training); none=plain CE continuation (no reveal)")
+    ap.add_argument("--chunks", type=int, default=16,
+                    help="chunk grid for chunk_prefix (inference chunk counts "
+                         "that divide this grid stay train-consistent)")
     ap.add_argument("--resume", default="auto")
     args = ap.parse_args()
 
@@ -93,6 +101,9 @@ def main():
         rope_theta=cfg.planner.rope_theta,
         upsample_mode=tok_quant_cfg.upsample_mode,
         cond_drop_p=cfg.planner.cond_drop_p).to(device)
+    if not cfg.planner.depth_ar:
+        for p in planner.depth_projs.parameters():
+            p.requires_grad_(False)
 
     # resume-from-own-ckpt beats loading the source (mid-finetune restarts)
     own_ckpt = find_resume_ckpt(out_dir) if args.resume == "auto" else None
@@ -170,23 +181,39 @@ def main():
             B = codes.shape[0]
             prefix_e = encode_prefix(tokenizer, prompt, pmask, ac)
 
-            # per-sample refine target scale + cosine mask rate
+            # per-sample refine target scale + mode-specific reveal pattern
             pick = torch.randint(0, len(mask_scale_ids), (B,), device=device)
-            r = torch.cos(math.pi / 2 * torch.rand(B, device=device))
             weights = torch.full((B, L_total), args.retain_weight, device=device)
             vis_mask = torch.zeros(B, L_total, dtype=torch.bool, device=device)
-            for i, k in enumerate(mask_scale_ids):
-                sel = pick == i
-                if not bool(sel.any()):
-                    continue
-                a, l = starts[k], scales[k]
-                masked = (torch.rand(B, l, device=device)
-                          < r[:, None]) & sel[:, None]
-                revealed = (~masked) & sel[:, None]
-                w = weights[:, a:a + l]
-                w[masked] = 1.0
-                w[revealed] = 0.0
-                vis_mask[:, a:a + l] |= revealed
+            if args.mask_mode == "none":
+                weights.fill_(1.0)  # plain CE continuation; reveal nothing
+            else:
+                r = torch.cos(math.pi / 2 * torch.rand(B, device=device))
+                for i, k in enumerate(mask_scale_ids):
+                    sel = pick == i
+                    if not bool(sel.any()):
+                        continue
+                    a, l = starts[k], scales[k]
+                    if args.mask_mode == "chunk_prefix":
+                        # reveal the first m of C contiguous chunks (m=0 keeps
+                        # the whole scale masked = plain next-scale training)
+                        C = min(args.chunks, l)
+                        base, rem = divmod(l, C)
+                        bounds = torch.tensor(
+                            [m * base + min(m, rem) for m in range(C)],
+                            device=device)
+                        plen = bounds[torch.randint(0, C, (B,), device=device)]
+                        revealed = (torch.arange(l, device=device)[None, :]
+                                    < plen[:, None]) & sel[:, None]
+                        masked = (~revealed) & sel[:, None]
+                    else:
+                        masked = (torch.rand(B, l, device=device)
+                                  < r[:, None]) & sel[:, None]
+                        revealed = (~masked) & sel[:, None]
+                    w = weights[:, a:a + l]
+                    w[masked] = 1.0
+                    w[revealed] = 0.0
+                    vis_mask[:, a:a + l] |= revealed
             sync_ctx = model.no_sync() if ddp and m < n_accum - 1 else nullcontext()
             with sync_ctx:
                 with ac():

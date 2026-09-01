@@ -121,7 +121,14 @@ for b in $BENCHMARKS; do
     # Default cfg=1.0 (exact single-branch) — CFG>1 only meaningful on
     # cond_drop-trained checkpoints; refine needs a visible-pathway finetune.
     [ -n "$CFG_SCHEDULE" ] && SCHED="$SCHED --cfg_schedule $CFG_SCHEDULE"
-    [ -n "$REFINE" ] && SCHED="$SCHED --refine_scales ${REFINE%%:*} --refine_steps ${REFINE##*:}"
+    # REFINE='scales:K[:noise]' (noise = MaskGIT choice-temperature);
+    # CHUNKAR='scales:C' (fixed-order chunk-AR, needs chunk_prefix finetune)
+    if [ -n "$REFINE" ]; then
+      IFS=: read -r RSC RK RNOISE <<< "$REFINE"
+      SCHED="$SCHED --refine_scales $RSC --refine_steps $RK"
+      [ -n "$RNOISE" ] && SCHED="$SCHED --refine_noise $RNOISE"
+    fi
+    [ -n "$CHUNKAR" ] && SCHED="$SCHED --chunk_scales ${CHUNKAR%%:*} --chunk_count ${CHUNKAR##*:}"
     run_step "generate $b" bash -c \
       "cd '$CODE' && '$PY' generate_prefix.py --config '$CONFIG' \
         --set 'run_name=$PLANNER_FULL' --set 'planner.tokenizer_run_dir=$LOCAL_ROOT/runs/$TOK_FULL' --benchmark '$BDIR/$b.jsonl' --n '$N' \

@@ -390,7 +390,10 @@ class PrefixVARPlanner(nn.Module):
                  forced_codes: torch.Tensor | None = None,
                  forced_scales: list[int] | None = None,
                  refine_scales: list[int] | None = None,
-                 refine_steps: int = 0):
+                 refine_steps: int = 0,
+                 refine_noise: float = 0.0,
+                 chunk_scales: list[int] | None = None,
+                 chunk_count: int = 0):
         """Next-scale sampling; K forwards, segments sampled INDEPENDENTLY
         within a position (the known PQ risk — depth-AR is the planned
         fallback if the segment-coupling probe bites). cfg_scale w != 1 runs
@@ -414,6 +417,9 @@ class PrefixVARPlanner(nn.Module):
                 "forced_scales requires forced_codes [B, sum(scales), S]"
         ref_dtype = self.map_proj.weight.dtype
         refine = set(refine_scales or []) if refine_steps > 0 else set()
+        chunked = set(chunk_scales or []) if chunk_count > 1 else set()
+        assert not (refine & chunked), \
+            "a scale cannot use both MaskGIT refinement and chunk-AR"
         null_e = null_mask = None
         if any(c != 1.0 for k, c in enumerate(cfgs) if k not in forced):
             null_e = self.null_prefix.to(prefix_e.dtype)[None, None, :].expand(
@@ -481,12 +487,46 @@ class PrefixVARPlanner(nn.Module):
                 cur = torch.where(committed[..., None], cur, sampled)
                 if j == K - 1:
                     break
+                conf = lp_pos
+                if refine_noise > 0:
+                    # MaskGIT choice-temperature: annealed Gumbel noise on the
+                    # commitment ranking (Chang et al. 2022 eq. for
+                    # mask_by_random_topk); pure-greedy selection over-commits
+                    # to safe text early
+                    u = torch.rand(B, l, device=device, generator=generator)
+                    gumbel = -torch.log(-torch.log(u.clamp_min(1e-20)).clamp_min(1e-20))
+                    conf = conf + refine_noise * (1.0 - (j + 1) / K) * gumbel
                 conf = torch.where(committed,
-                                   torch.full_like(lp_pos, float("inf")), lp_pos)
+                                   torch.full_like(conf, float("inf")), conf)
                 n_open = max(1, int(l * math.cos(math.pi / 2 * (j + 1) / K)))
                 reopen = conf.topk(n_open, dim=-1, largest=False).indices
                 committed = torch.ones(B, l, dtype=torch.bool, device=device)
                 committed.scatter_(1, reopen, False)
+            return cur
+
+        def _chunk_ar_scale(maps, k, seg_start, l):
+            """Fixed-order chunk-AR within scale k: split the l positions into
+            chunk_count contiguous chunks; chunk i is sampled with chunks <i
+            committed and revealed through the visible pathway (one forward
+            per chunk). Segment order within positions is whatever
+            _sample_block does (depth-AR if depth_projs are trained)."""
+            C = min(chunk_count, l)
+            if C <= 1:
+                return _sample_block(maps, k, seg_start, l)[0]
+            base, rem = divmod(l, C)
+            sizes = [base + (1 if i < rem else 0) for i in range(C)]
+            cur = torch.zeros(B, l, self.segments, dtype=torch.long, device=device)
+            L_ladder = seg_start + l
+            vis_c = torch.zeros(B, L_ladder, self.segments, dtype=torch.long,
+                                device=device)
+            vis_m = torch.zeros(B, L_ladder, dtype=torch.bool, device=device)
+            done = 0
+            for sz in sizes:
+                vis_c[:, seg_start:] = cur
+                vis_m[:, seg_start:seg_start + done] = True
+                sampled, _ = _sample_block(maps, k, seg_start, l, vis_c, vis_m)
+                cur[:, done:done + sz] = sampled[:, done:done + sz]
+                done += sz
             return cur
 
         f_hat = torch.zeros(B, self.seq_len, self.d_code, device=device)
@@ -507,6 +547,8 @@ class PrefixVARPlanner(nn.Module):
                         else torch.zeros(B, 0, self.d_code, device=device))
                 if k in refine:
                     codes_k = _refine_scale(maps, k, seg_start, l)
+                elif k in chunked:
+                    codes_k = _chunk_ar_scale(maps, k, seg_start, l)
                 else:
                     codes_k, _ = _sample_block(maps, k, seg_start, l)
             codes_out.append(codes_k)

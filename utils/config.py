@@ -126,6 +126,10 @@ class PlannerConfig:
     ffn_mult: int = 4
     rope_theta: float = 10000.0
     cond_drop_p: float = 0.1        # CFG condition dropout
+    # depth-AR segment heads: False freezes depth_projs at zero (exact
+    # parallel-head training/sampling; the 2x2 intra-scale ablation's
+    # "segment-parallel" arms)
+    depth_ar: bool = True
     prompt_encoder: str = "bert-base-uncased"
     tokenizer_run_dir: str = ""     # dir containing the frozen tokenizer ckpt
     codes_dir: str = ""             # dir with codes_{split}.npy from dump_codes

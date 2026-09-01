@@ -67,6 +67,12 @@ def main():
     ap.add_argument("--refine_scales", default="",
                     help="comma list of scale INDICES for MaskGIT refinement")
     ap.add_argument("--refine_steps", type=int, default=0)
+    ap.add_argument("--refine_noise", type=float, default=0.0,
+                    help="MaskGIT choice-temperature (annealed Gumbel on the "
+                         "commitment ranking); 0 = greedy")
+    ap.add_argument("--chunk_scales", default="",
+                    help="comma scale INDICES for fixed-order chunk-AR")
+    ap.add_argument("--chunk_count", type=int, default=0)
     ap.add_argument("--max_prompt_tokens", type=int, default=0,
                     help="0 = the tokenizer window (the whole prompt fits)")
     ap.add_argument("--chain_cap", type=int, default=4)
@@ -113,6 +119,10 @@ def main():
                      if args.refine_scales else None)
     if refine_scales is not None:
         assert args.refine_steps > 0, "--refine_scales requires --refine_steps"
+    chunk_scales = ([int(x) for x in args.chunk_scales.split(",")]
+                    if args.chunk_scales else None)
+    if chunk_scales is not None:
+        assert args.chunk_count > 1, "--chunk_scales requires --chunk_count > 1"
     max_prompt = args.max_prompt_tokens or seq_len
 
     gen_rng = torch.Generator(device=device).manual_seed(args.seed)
@@ -133,7 +143,10 @@ def main():
                                     temperature=temps, top_k=topks, top_p=topps,
                                     cfg_scale=cfgs, generator=generator,
                                     refine_scales=refine_scales,
-                                    refine_steps=args.refine_steps)
+                                    refine_steps=args.refine_steps,
+                                    refine_noise=args.refine_noise,
+                                    chunk_scales=chunk_scales,
+                                    chunk_count=args.chunk_count)
         with ac():
             logits = tokenizer.decode_latent(f_hat.to(
                 next(tokenizer.decoder.parameters()).dtype))

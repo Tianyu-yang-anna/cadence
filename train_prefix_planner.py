@@ -131,6 +131,11 @@ def main():
         rope_theta=cfg.planner.rope_theta,
         upsample_mode=tok_quant_cfg.upsample_mode,
         cond_drop_p=cfg.planner.cond_drop_p).to(device)
+    if not cfg.planner.depth_ar:
+        # frozen at zero-init => segment heads see plain h every step: exact
+        # parallel-head training (the 2x2 ablation's segment-parallel arms)
+        for p in planner.depth_projs.parameters():
+            p.requires_grad_(False)
     n_params = sum(p.numel() for p in planner.parameters() if p.requires_grad)
     n_tok = sum(p.numel() for p in tokenizer.parameters())
     if is_main:
