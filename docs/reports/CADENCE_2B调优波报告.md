@@ -122,3 +122,64 @@ MAUVE 6.4 → 4.1），不是反超本身；③NFE 优势（~15×）不变。
 `_mgd15`（15k 微调）；原始 JSON 在 `results/benchgen_planner_prefix_owt2_pqsh_{b2mgd,mgd15}/`。
 工程注记：从头训练新模型（含 visible/depth 参数）曾触发 DDP unused-param
 死锁——visible 通路现以全 False mask 每步进图（精确零贡献），commit 361317d。
+
+---
+
+# 终章三：尺度内解码顺序 2×2（2026-09-01，mentor 两维正交框架）
+
+框架：采样两个正交维度——跨尺度（恒为顺序，VAR 本性）× 尺度内。尺度内再分
+两个子维度：位置内段序（段并行 vs 段 depth-AR）× 位置间序（并行 / chunk-AR
+固定序 / MaskGIT 置信度序）。全部臂严格 2B 同构：基座 5630 + 微调 2000 步，
+只动微调目标与解码方式。新基建：chunk-AR 采样（CHUNKAR='scales:C'）、
+chunk_prefix / none 微调模式、MaskGIT choice-noise（REFINE='s:K:noise'）、
+planner.depth_ar=false 冻结开关（零投影=逐位等价并行头，单测锁定）。
+
+## sel 全表（p5hot7，sel n=250，wiki R1/R2/MAUVE | WS MAUVE）
+
+| 臂 | ckpt+解码 | wiki | WS M |
+|---|---|---|---|
+| 基线（都关） | b2ndpl 平采样 | 22.3/2.2/10.3 | 16.2 |
+| ①段-only | b2pl 平采样 | 21.8/2.1/**16.1** | 12.3 |
+| ②chunk-only | b2ndck C=4 / C=16 | 21.7/2.1/12.5 · 21.9/2.1/14.4 | 15.5 · 9.2 |
+| ③段+chunk | b2ck C=4 / C=16 | 21.3/2.1/13.3 · 21.6/2.2/10.6 | 14.3 · 9.5 |
+| （③ ckpt 平采样对照） | b2ck plain | 21.6/2.2/14.2 | 15.1 |
+| MaskGIT 贪心 | b2mg3 R3K8 | 21.9/2.3/14.8 | 11.2 |
+| （MG ckpt 平采样对照） | b2mg3 plain | 21.5/2.1/13.5 | 7.2 |
+| MaskGIT+noise 0.2/1/3/30 | b2mg3 | 全部逐位 21.6/2.2/9.9 | 6.8 |
+
+## sel 判读
+
+1. **段内 depth-AR = 最大杠杆**：+5.8 wiki MAUVE（基线 10.3→① 16.1），与此前
+   test 消融（+4.5）一致；
+2. **chunk-AR 不叠加**：单独 +2~4（基线→②），但叠在段深度上反而 −2.8
+   （①16.1→③13.3）——两种顺序机制修同一失效模式，段深度已吃掉收益；
+3. **choice-noise 机制性失效**：冷温度（细尺度 T≈0.1）下被采样 token 的
+   log-prob 谱宽 ≪1，任何 ≥0.01 的噪声都让承诺顺序退化为纯 Gumbel 随机序
+   （四个量级逐位同分），且随机序显著伤分（9.9 vs 贪心 14.8）——**贪心置信度
+   承诺是文本域的正确适配**，原文 choice-temperature 不迁移；
+4. MaskGIT 微调本身不如纯 CE 续训（_mg0 13.5 vs ①16.1），其贪心精化净效应
+   +1.3（13.5→14.8）。
+
+## test 终表（4×1000 一枪，R1/R2/MAUVE；NFE：DA~22、MG/B2~70、BD3~1024）
+
+| 配置 | Wikipedia | WikiSource | TinyStories | 1BW |
+|---|---|---|---|---|
+| _finalDA 段-only 平采样 | 22.6/2.3/9.77 | 28.6/3.1/5.32 | 26.1/2.1/0.55 | 8.9/0.3/**0.66** |
+| _finalMG MaskGIT′+贪心 R3K8 | 22.8/2.3/8.48 | 28.7/3.2/3.90 | 26.5/2.2/0.57 | 8.8/0.4/0.59 |
+| _finalB2（终章二注册行） | 22.8/2.5/**12.43** | 28.6/3.3/4.10 | 26.5/2.3/0.55 | 8.9/0.3/0.54 |
+| BD3-LM | 23.2/2.3/11.39 | 27.5/2.7/**7.67** | 25.3/2.1/0.64 | 9.8/0.4/0.49 |
+
+## 定论（给 mentor 问题的回答）
+
+- **depth-AR vs MaskGIT：depth-AR 胜，且是训练侧的本质改进**（sel +5.8 /
+  历史 test +4.5），NFE 恒定不加推理成本；
+- **推理侧位置间顺序机制无可靠净增益**：三个严格 2B 臂 R1/R2 几乎相同，
+  wiki MAUVE 的 test 排序（B2 12.43 > DA 9.77 > MG 8.48）与 sel 排序
+  （DA 16.1 > MG 14.8 > B2 13.9）**完全倒挂**——差异处于 sel→test 迁移噪声带
+  （n=250/1000 MAUVE 的老问题第 N+1 次实证）。对 BD3 的注册对比行维持
+  _finalB2（wiki MAUVE 12.43 > 11.39）；
+- chunk-AR（mentor 提的第二种 depth 序）与 choice-noise 两条路线可以关闭；
+  段深度 S=8/16 消融需重训 tokenizer（每点 ~2 天）留作后续决策。
+
+产物：ckpt `_b2nd/_b2pl/_b2ck/_b2mg3/_b2ndpl/_b2ndck`；全部 sel/test JSON 在
+`results/benchgen_planner_prefix_owt2_pqsh_{b2pl,b2ck,b2mg3,b2ndpl,b2ndck}/`。
