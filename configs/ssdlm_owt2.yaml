@@ -1,0 +1,45 @@
+# SSD-LM baseline (Han et al., ACL 2023; arXiv:2210.17432) on OpenWebText2 at
+# the controlled-comparison trunk (12L x 768 x 12h) and the 2B-token budget.
+#
+# BUDGET: 7630 steps x 1024 sequences x 256 positions = 2,000,158,720 trunk
+# tokens == 7630 x 256 x 1024, bit-identical to the AR / MDLM / BD3 / CADENCE
+# rows.  SSD-LM supervises ONE 25-token block per sequence, so the supervised
+# position count is 7630 x 1024 x 25 = 195.3M; BOTH numbers go in the caption
+# (deviation D3 in train_ssdlm.py).
+#
+# Loaded by utils/plain_config.py (NOT utils/config.py, whose dataclass schema
+# has no ssdlm section and is owned by the tokenizer/planner stack).
+run_name: ssdlm_owt2
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 256             # 231 clean context + 25 diffusion block
+  d_model: 768
+  rope_theta: 10000.0
+  trunk: {num_layers: 12, num_heads: 12, ffn_mult: 4, dropout: 0.0}
+ssdlm:
+  block_size: 25           # paper: --decoding_block_size 25
+  k: 5.0                   # paper: --hardcoded_pseudo_diralpha 5
+  t_train: 5000            # paper: --sigma_num_steps 5000
+  rand_ctx_p: 0.5          # deviation D4: EOS-left-pad short-context augmentation
+data:
+  bin_dir: /tmp/cadence_local/data/owt2_gpt2
+  num_workers: 4
+  limit_windows: null
+train:
+  max_steps: 7630
+  batch_size: 1024         # sequences per optimizer step (x256 tok = 262144)
+  micro_batch_size: 32     # 32 GPUs -> n_accum 1; 8 GPUs -> n_accum 4
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 400
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  bf16: true
+  log_interval: 50
+  eval_interval: 500
+  eval_batches: 10
+  save_interval: 1000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

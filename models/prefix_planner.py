@@ -34,7 +34,11 @@ cross-attention + CFG) with in-context prefix conditioning, and the single
     single-branch fast path);
   - MaskGIT refinement / visible-code pathway: not ported to this class yet
     (the old wiring was never actually evaluated — see the REFINE bug note
-    in memory); a future port should interleave into generate()'s ladder.
+    in memory); a future port should interleave into generate()'s ladder;
+  - intra-scale sampler (2026-09-02): models/sampling_transformer.py runs over
+    the CACHED per-scale trunk hidden, so generate()'s sample_mode
+    'pos' / 'seg' / 'ar' refine a scale at ZERO extra trunk forwards (the
+    input-side visible pathway would void that cache — it changes h).
 """
 from __future__ import annotations
 
@@ -44,6 +48,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.sampling_transformer import SamplingTransformer
 from models.var_planner import _apply_rope_at, _per_scale, _sample, scale_coordinates
 
 
@@ -80,11 +85,14 @@ class PrefixVARPlanner(nn.Module):
     def __init__(self, scales: list[int], seq_len: int, codebooks: torch.Tensor,
                  d_model: int = 768, n_layers: int = 14, n_heads: int = 12,
                  ffn_mult: int = 4, rope_theta: float = 10000.0,
-                 upsample_mode: str = "nearest-exact", cond_drop_p: float = 0.0):
+                 upsample_mode: str = "nearest-exact", cond_drop_p: float = 0.0,
+                 sampler: bool = False, sampler_layers: int = 2,
+                 sampler_width: int = 384, sampler_heads: int = 6):
         """codebooks: [K, S, N, d_seg] fp32 frozen per-scale PQ books (a
         shared-codebook tokenizer passes the same book repeated K times).
         cond_drop_p > 0 enables CFG training: dropped samples get the learned
-        null_prefix latent (position-constant) instead of the prompt latent."""
+        null_prefix latent (position-constant) instead of the prompt latent.
+        sampler=True attaches the intra-scale SamplingTransformer."""
         super().__init__()
         assert codebooks.ndim == 4 and codebooks.shape[0] == len(scales)
         self.scales = list(scales)
@@ -148,6 +156,15 @@ class PrefixVARPlanner(nn.Module):
         for proj in self.depth_projs:
             nn.init.zeros_(proj.weight)
             nn.init.zeros_(proj.bias)
+        # built AFTER the generic init loop so its own zero-init out_proj
+        # survives (the exact-no-op / backward-compatibility guarantee)
+        self.sampler = None
+        if sampler:
+            self.sampler = SamplingTransformer(
+                n_scales=K, segments=S, seg_dim=self.d_code // S,
+                d_model=d_model, d_s=sampler_width, n_layers=sampler_layers,
+                n_heads=sampler_heads, ffn_mult=ffn_mult,
+                rope_theta=rope_theta)
 
     # ---------------------------------------------------------------- dequant
 
@@ -282,27 +299,34 @@ class PrefixVARPlanner(nn.Module):
             x = blk(x, positions, mask)
         return self.ln_f(x)
 
-    def _depth_states(self, h_target: torch.Tensor,
-                      codes_flat: torch.Tensor) -> torch.Tensor:
+    def _depth_states(self, h_target: torch.Tensor, codes_flat: torch.Tensor,
+                      scale_idx=None) -> torch.Tensor:
         """Teacher-forced depth-AR states [B, L, S, d_model]: state_s = h +
-        sum_{t<s} depth_projs[t](e_t(GT)). Zero projs -> states == h."""
+        sum_{t<s} depth_projs[t](e_t(GT)). Zero projs -> states == h.
+        scale_idx: an int when h_target/codes_flat cover ONE scale's block
+        (the decode layout), None for ladder layout."""
         B, L = h_target.shape[0], h_target.shape[1]
-        e = self.dequant_ladder(codes_flat[:, :L]).view(
-            B, L, self.segments, -1)
+        e = (self.dequant_scale(codes_flat[:, :L], scale_idx)
+             if isinstance(scale_idx, int)
+             else self.dequant_ladder(codes_flat[:, :L])).view(
+                 B, L, self.segments, -1)
         pe = torch.stack([self.depth_projs[s](e[:, :, s].to(h_target.dtype))
                           for s in range(self.segments)], dim=2)
         states = h_target.unsqueeze(2).repeat(1, 1, self.segments, 1)
         states[:, :, 1:] += torch.cumsum(pe, dim=2)[:, :, :-1]
         return states
 
-    def _head_logits_depth(self, h_target: torch.Tensor,
-                           codes_flat: torch.Tensor) -> torch.Tensor:
-        """[B, L, S, N] teacher-forced logits where segment s reads from its
-        depth state through ITS slice of the per-scale head (diagonal pick)."""
-        states = self._depth_states(h_target, codes_flat)
+    def _head_logits_diag(self, states: torch.Tensor,
+                          scale_idx=None) -> torch.Tensor:
+        """[B, L, S, d_model] per-segment states -> [B, L, S, N] where segment
+        s reads ITS slice of the per-scale head (diagonal pick). scale_idx: an
+        int when the span is ONE scale's block, None for ladder layout."""
         B, L = states.shape[0], states.shape[1]
         S = self.segments
-        ar = torch.arange(S, device=h_target.device)
+        ar = torch.arange(S, device=states.device)
+        if isinstance(scale_idx, int):
+            o = self.heads[scale_idx](states).view(B, L, S, S, self.seg_vocab)
+            return o[:, :, ar, ar]
         outs, start = [], 0
         for k, l in enumerate(self.scales):
             if start >= L:
@@ -312,6 +336,12 @@ class PrefixVARPlanner(nn.Module):
             outs.append(o[:, :, ar, ar])
             start += l
         return torch.cat(outs, dim=1)
+
+    def _head_logits_depth(self, h_target: torch.Tensor,
+                           codes_flat: torch.Tensor) -> torch.Tensor:
+        """[B, L, S, N] teacher-forced logits where segment s reads from its
+        depth state through ITS slice of the per-scale head (diagonal pick)."""
+        return self._head_logits_diag(self._depth_states(h_target, codes_flat))
 
     def _head_logits(self, h_target: torch.Tensor) -> torch.Tensor:
         """[B, L', d_model] target hidden states -> [B, L', S, N] logits
@@ -326,6 +356,124 @@ class PrefixVARPlanner(nn.Module):
                 B, seg.shape[1], self.segments, self.seg_vocab))
             start += l
         return torch.cat(outs, dim=1)
+
+    # -------------------------------------------------------------- sampler
+
+    def _ladder_ids(self, L: int, device) -> torch.Tensor:
+        return torch.cat([torch.full((l,), k, device=device, dtype=torch.long)
+                          for k, l in enumerate(self.scales)])[:L]
+
+    def _sampler_residual(self, h_blk: torch.Tensor, scale_idx,
+                          codes_cur: torch.Tensor, committed: torch.Tensor,
+                          mode: str, coords: torch.Tensor | None,
+                          causal: bool = False,
+                          block_ids: torch.Tensor | None = None,
+                          seg_vecs: torch.Tensor | None = None
+                          ) -> torch.Tensor:
+        """Sampler residual for the state the EXISTING per-scale head reads:
+        [B, L, S, d_model] in segment mode, [B, L, d_model] in position mode.
+        scale_idx is an int for a single scale, a [L] long tensor for the whole
+        ladder; codes_cur is in the SAME layout as h_blk."""
+        B, L = h_blk.shape[0], h_blk.shape[1]
+        if seg_vecs is None:
+            seg_vecs = (self.dequant_scale(codes_cur, scale_idx)
+                        if isinstance(scale_idx, int)
+                        else self.dequant_ladder(codes_cur[:, :L]))
+            seg_vecs = seg_vecs.view(B, L, self.segments, -1)
+        return self.sampler(h_blk, scale_idx, seg_vecs, committed, coords, mode,
+                            causal=causal, block_ids=block_ids).to(h_blk.dtype)
+
+    def _sampler_readout(self, state: torch.Tensor, scale_idx,
+                         codes: torch.Tensor, mode: str) -> torch.Tensor:
+        """[B, L, S, N] logits from a sampler-augmented state — the ONE readout
+        both the training forward and generate()'s decode paths call.
+
+        POSITION mode keeps the depth-AR chain on top of the residual
+        (state_s = h + z + sum_{t<s} depth_projs[t](e_t)): the position axis
+        and the depth axis must stay ORTHOGONAL or 'pos'/'ar' silently also
+        turn depth-AR off. SEGMENT mode reads each slot's own state in
+        parallel — there the sampler IS the segment coupling and depth_projs
+        stay frozen at zero, so the two mechanisms never train together."""
+        if mode == "segment":
+            return self._head_logits_diag(state, scale_idx)
+        return self._head_logits_diag(
+            self._depth_states(state, codes, scale_idx), scale_idx)
+
+    def _sampler_head_logits(self, h_blk: torch.Tensor, scale_idx,
+                             codes_cur: torch.Tensor, committed: torch.Tensor,
+                             mode: str, coords: torch.Tensor | None,
+                             causal: bool = False,
+                             block_ids: torch.Tensor | None = None,
+                             seg_vecs: torch.Tensor | None = None,
+                             depth_codes: torch.Tensor | None = None,
+                             keep: torch.Tensor | None = None) -> torch.Tensor:
+        """Residual + readout in one call. keep: [L] bool marking the scales
+        the decode applies the sampler to — everywhere else the residual is
+        dropped AND the readout falls back to plain depth-AR, which is exactly
+        what generate() runs at those scales. depth_codes: the depth chain's
+        teacher-forcing codes (defaults to codes_cur)."""
+        z = self._sampler_residual(h_blk, scale_idx, codes_cur, committed, mode,
+                                   coords, causal=causal, block_ids=block_ids,
+                                   seg_vecs=seg_vecs)
+        codes = codes_cur if depth_codes is None else depth_codes
+        if mode == "segment":
+            state = h_blk[:, :, None, :] + z
+            if keep is not None:
+                state = torch.where(keep[None, :, None, None], state,
+                                    self._depth_states(h_blk, codes, scale_idx))
+            return self._head_logits_diag(state, scale_idx)
+        if keep is not None:
+            z = z * keep[None, :, None].to(z.dtype)
+        return self._sampler_readout(h_blk + z, scale_idx, codes, mode)
+
+    def _sampler_keep(self, ids: torch.Tensor, sampler_mask: torch.Tensor,
+                      sampler_scales) -> torch.Tensor:
+        """[L] bool: the sampler residual must exist at EXACTLY the scales the
+        decode applies it to, or the scales generate() decodes on plain h are
+        trained through a readout inference never runs. sampler_scales None
+        falls back to the scales the reveal pattern actually touches."""
+        K = len(self.scales)
+        if sampler_scales is None:
+            touched = sampler_mask.reshape(
+                sampler_mask.shape[0], ids.shape[0], -1).any(-1).any(0).float()
+            hit = torch.zeros(K, device=ids.device).index_add_(0, ids, touched)
+            return (hit > 0)[ids]
+        sel = torch.zeros(K, dtype=torch.bool, device=ids.device)
+        sel[torch.as_tensor(sorted(set(sampler_scales)), device=ids.device)] = True
+        return sel[ids]
+
+    def _sampler_ladder_logits(self, h_target, codes_flat, sampler_codes,
+                               sampler_mask, sampler_mode, sampler_scales):
+        """Whole-ladder sampler pass, ONE call over sum(scales) with a
+        block-DIAGONAL mask (attention never crosses a scale). The residual is
+        zeroed outside sampler_scales so every other scale is supervised
+        through exactly the readout its decode path runs. With no pattern
+        requested the sampler still runs with an all-False committed mask and
+        its residual is folded into the depth-AR states, so the readout is
+        EXACTLY today's while every sampler parameter enters the autograd
+        graph — DDP reducer rule (find_unused_parameters=False)."""
+        B, L = h_target.shape[0], h_target.shape[1]
+        device = h_target.device
+        ids = self._ladder_ids(L, device)
+        coords = scale_coordinates(self.scales, self.seq_len, device)[:L]
+        codes = codes_flat if sampler_codes is None else sampler_codes
+        seg_vecs = self.dequant_ladder(codes[:, :L]).view(
+            B, L, self.segments, -1)
+        mode, causal, keep = "position", False, None
+        committed = sampler_mask
+        if committed is None:
+            committed = torch.zeros(B, L, self.segments, dtype=torch.bool,
+                                    device=device)
+        else:
+            assert sampler_mode in ("position", "segment", "causal"), \
+                f"unknown sampler_mode {sampler_mode}"
+            mode = "segment" if sampler_mode == "segment" else "position"
+            causal = sampler_mode == "causal"
+            keep = self._sampler_keep(ids, committed, sampler_scales)
+        return self._sampler_head_logits(
+            h_target, ids, codes, committed, mode, coords, causal=causal,
+            block_ids=None if mode == "segment" else ids, seg_vecs=seg_vecs,
+            depth_codes=codes_flat, keep=keep)
 
     # ------------------------------------------------------------- training
 
@@ -347,7 +495,11 @@ class PrefixVARPlanner(nn.Module):
                 prefix_mask: torch.Tensor | None = None,
                 cond_drop: torch.Tensor | None = None,
                 visible_codes: torch.Tensor | None = None,
-                visible_mask: torch.Tensor | None = None) -> torch.Tensor:
+                visible_mask: torch.Tensor | None = None,
+                sampler_codes: torch.Tensor | None = None,
+                sampler_mask: torch.Tensor | None = None,
+                sampler_mode: str = "position",
+                sampler_scales: list[int] | None = None) -> torch.Tensor:
         """Teacher-forced logits [B, sum(scales), S, N].
 
         codes_flat: [B, sum(scales), S] ground-truth PQ codes;
@@ -355,7 +507,13 @@ class PrefixVARPlanner(nn.Module):
         prompt window (mask-aware: pad positions are exact zeros);
         prefix_mask: [B, P] bool, True = real prompt token;
         cond_drop: [B] bool — True samples get the null condition (CFG);
-        None + training + cond_drop_p > 0 samples it internally."""
+        None + training + cond_drop_p > 0 samples it internally;
+        sampler_codes/sampler_mask: the intra-scale sampler's reveal pattern
+        (codes default to codes_flat; mask is [B, L, S] for sampler_mode
+        'segment', [B, L] for 'position'/'causal'); None keeps the depth-AR
+        readout and runs the sampler on an all-False mask;
+        sampler_scales: the scale INDICES the decode applies the sampler to
+        (= --mask_scales) — the residual is zeroed everywhere else."""
         P = prefix_e.shape[1]
         if cond_drop is None and self.training and self.cond_drop_p > 0:
             cond_drop = torch.rand(prefix_e.shape[0],
@@ -375,7 +533,12 @@ class PrefixVARPlanner(nn.Module):
         x = self._assemble(prefix_e, input_maps, self.map_proj.weight.dtype,
                            visible_codes, visible_mask)
         h = self._trunk(x, P, prefix_mask)
-        return self._head_logits_depth(h[:, P:], codes_flat)
+        if self.sampler is None:
+            assert sampler_mask is None, "planner built without a sampler"
+            return self._head_logits_depth(h[:, P:], codes_flat)
+        return self._sampler_ladder_logits(h[:, P:], codes_flat, sampler_codes,
+                                           sampler_mask, sampler_mode,
+                                           sampler_scales)
 
     # ------------------------------------------------------------ inference
 
@@ -393,13 +556,18 @@ class PrefixVARPlanner(nn.Module):
                  refine_steps: int = 0,
                  refine_noise: float = 0.0,
                  chunk_scales: list[int] | None = None,
-                 chunk_count: int = 0):
+                 chunk_count: int = 0,
+                 sample_mode: str = "",
+                 sample_scales: list[int] | None = None,
+                 sample_steps: int = 0):
         """Next-scale sampling; K forwards, segments sampled INDEPENDENTLY
         within a position (the known PQ risk — depth-AR is the planned
         fallback if the segment-coupling probe bites). cfg_scale w != 1 runs
         a second null-prefix branch per scale and mixes
         logits_u + w * (logits_c - logits_u); w == 1 keeps the exact
-        single-branch fast path. Returns
+        single-branch fast path. sample_mode 'pos'/'seg'/'ar' routes
+        sample_scales through the intra-scale sampler instead (trunk hidden
+        computed ONCE per scale, then only the sampler iterates). Returns
         (codes [B, sum(scales), S], f_hat [B, seq_len, d_code]) — f_hat is
         the decoder input (identical to ladder_latent(codes)) and the
         next-window chain prefix."""
@@ -420,6 +588,15 @@ class PrefixVARPlanner(nn.Module):
         chunked = set(chunk_scales or []) if chunk_count > 1 else set()
         assert not (refine & chunked), \
             "a scale cannot use both MaskGIT refinement and chunk-AR"
+        assert sample_mode in ("", "pos", "seg", "ar"), \
+            f"unknown sample_mode {sample_mode}"
+        sampled = set(sample_scales or []) if sample_mode else set()
+        assert not sampled or self.sampler is not None, \
+            "sample_mode requires a sampler-equipped planner"
+        assert not (sampled & (refine | chunked)), \
+            "a scale cannot use both the sampler and refine/chunk-AR"
+        if sampled and sample_mode in ("pos", "seg"):
+            assert sample_steps > 0, f"sample_mode '{sample_mode}' needs steps"
         null_e = null_mask = None
         if any(c != 1.0 for k, c in enumerate(cfgs) if k not in forced):
             null_e = self.null_prefix.to(prefix_e.dtype)[None, None, :].expand(
@@ -529,6 +706,142 @@ class PrefixVARPlanner(nn.Module):
                 done += sz
             return cur
 
+        coords_all = scale_coordinates(self.scales, self.seq_len, device)
+
+        def _cached_hidden(maps, k, seg_start, l):
+            """Trunk hidden of block k for both CFG branches, computed ONCE
+            per scale: h_k is a pure function of (prefix, maps, scale_emb) and
+            INVARIANT to scale k's own codes while the input-side visible
+            pathway is unused, so every sampler pass may reuse it bit-exactly.
+            The sampler exists precisely so committed codes never re-enter the
+            trunk input, which would void that invariance."""
+            h_c = _block_hidden(prefix_e, prefix_mask, maps)[
+                :, seg_start:seg_start + l]
+            h_u = None
+            if cfgs[k] != 1.0:
+                h_u = _block_hidden(null_e, null_mask, maps)[
+                    :, seg_start:seg_start + l]
+            return h_c, h_u
+
+        def _sampler_states(h_c, h_u, k, cur, committed, mode, coords,
+                            causal=False):
+            """Cached hidden + sampler residual, ONE residual per decode step
+            per CFG branch: the residual conditions on the COMMITTED stream
+            only, so the depth chain's in-progress segments never move it."""
+            z_c = self._sampler_residual(h_c, k, cur, committed, mode, coords,
+                                         causal=causal)
+            st_c = h_c[:, :, None, :] + z_c if mode == "segment" else h_c + z_c
+            st_u = None
+            if h_u is not None:
+                z_u = self._sampler_residual(h_u, k, cur, committed, mode,
+                                             coords, causal=causal)
+                st_u = h_u[:, :, None, :] + z_u if mode == "segment" else h_u + z_u
+            return st_c, st_u
+
+        def _sampler_readout_cfg(st_c, st_u, k, cur, mode):
+            lo = self._sampler_readout(st_c, k, cur, mode)
+            if st_u is not None:
+                lo_u = self._sampler_readout(st_u, k, cur, mode)
+                lo = lo_u + cfgs[k] * (lo - lo_u)
+            return lo
+
+        def _draw(lo, k):
+            """[B, l, S, N] logits -> codes [B, l, S] + per-slot log-prob."""
+            b, l, S, N = lo.shape
+            blk = (lo / max(temps[k], 1e-6)).reshape(b, l * S, N)
+            c = _sample(blk, top_ks[k], top_ps[k], generator).view(b, l, S)
+            lp = blk.float().log_softmax(-1).gather(
+                -1, c.reshape(b, l * S, 1)).view(b, l, S)
+            return c, lp
+
+        def _depth_draw(st_c, st_u, k, cur):
+            """Depth-AR draw on top of the sampler residual: segment s reads
+            the SAME chain the training readout builds, over the segments
+            already drawn AT THIS position. Keeps the position axis and the
+            depth axis orthogonal."""
+            w = cur.clone()
+            segs, lps = [], []
+            for s in range(self.segments):
+                lo = _sampler_readout_cfg(st_c, st_u, k, w, "position")[:, :, s]
+                blk = lo / max(temps[k], 1e-6)
+                c_s = _sample(blk, top_ks[k], top_ps[k], generator)
+                lps.append(blk.float().log_softmax(-1).gather(
+                    -1, c_s[..., None]).squeeze(-1))
+                w[:, :, s] = c_s
+                segs.append(c_s)
+            return torch.stack(segs, dim=-1), torch.stack(lps, dim=-1)
+
+        def _sampler_pos_scale(maps, k, seg_start, l):
+            """Position-axis MaskGIT over the cached hidden: cosine keep
+            schedule, greedy confidence, committed positions fed back through
+            the sampler (never through the trunk input)."""
+            h_c, h_u = _cached_hidden(maps, k, seg_start, l)
+            coords = coords_all[seg_start:seg_start + l]
+            cur = torch.zeros(B, l, self.segments, dtype=torch.long, device=device)
+            committed = torch.zeros(B, l, dtype=torch.bool, device=device)
+            for j in range(sample_steps):
+                st_c, st_u = _sampler_states(h_c, h_u, k, cur, committed,
+                                             "position", coords)
+                s_codes, lp = _depth_draw(st_c, st_u, k, cur)
+                cur = torch.where(committed[..., None], cur, s_codes)
+                if j == sample_steps - 1:
+                    break
+                conf = torch.where(committed,
+                                   torch.full((B, l), float("inf"), device=device),
+                                   lp.mean(-1))
+                n_open = max(1, int(l * math.cos(math.pi / 2 * (j + 1) / sample_steps)))
+                reopen = conf.topk(min(n_open, l), dim=-1, largest=False).indices
+                committed = torch.ones(B, l, dtype=torch.bool, device=device)
+                committed.scatter_(1, reopen, False)
+            return cur
+
+        def _sampler_seg_scale(maps, k, seg_start, l):
+            """Segment-axis MaskGIT: at most S passes over the S segment
+            slots, each committing the highest-confidence slots per position
+            and feeding them back through the sampler's segment axis."""
+            S = self.segments
+            steps = max(1, min(sample_steps, S))
+            h_c, h_u = _cached_hidden(maps, k, seg_start, l)
+            coords = coords_all[seg_start:seg_start + l]
+            cur = torch.zeros(B, l, S, dtype=torch.long, device=device)
+            committed = torch.zeros(B, l, S, dtype=torch.bool, device=device)
+            for j in range(steps):
+                st_c, st_u = _sampler_states(h_c, h_u, k, cur, committed,
+                                             "segment", coords)
+                lo = _sampler_readout_cfg(st_c, st_u, k, cur, "segment")
+                s_codes, lp = _draw(lo, k)
+                cur = torch.where(committed, cur, s_codes)
+                if j == steps - 1:
+                    break
+                n_keep = max(1, min(S, int(round(S * (j + 1) / steps))))
+                conf = torch.where(committed, torch.full_like(lp, float("inf")), lp)
+                keep = conf.topk(n_keep, dim=-1, largest=True).indices
+                committed = torch.zeros(B, l, S, dtype=torch.bool, device=device)
+                committed.scatter_(2, keep, True)
+            return cur
+
+        def _sampler_ar_scale(maps, k, seg_start, l):
+            """Strict left-to-right AR at chunk size 1 through the sampler's
+            causal position mode: position i is conditioned on the committed
+            codes of positions < i. Recompute-per-step (l sampler forwards
+            over the cached hidden, zero extra trunk forwards)."""
+            h_c, h_u = _cached_hidden(maps, k, seg_start, l)
+            coords = coords_all[seg_start:seg_start + l]
+            cur = torch.zeros(B, l, self.segments, dtype=torch.long, device=device)
+            idx = torch.arange(l, device=device)
+            for i in range(l):
+                committed = (idx < i)[None].expand(B, l)
+                st_c, st_u = _sampler_states(h_c, h_u, k, cur, committed,
+                                             "position", coords, causal=True)
+                # only position i is read out: the depth chain over the whole
+                # block would cost l x l head applications per scale
+                sl = slice(i, i + 1)
+                s_codes, _ = _depth_draw(st_c[:, sl],
+                                         None if st_u is None else st_u[:, sl],
+                                         k, cur[:, sl])
+                cur[:, sl] = s_codes
+            return cur
+
         f_hat = torch.zeros(B, self.seq_len, self.d_code, device=device)
         maps_so_far: list[torch.Tensor] = []
         codes_out: list[torch.Tensor] = []
@@ -549,6 +862,11 @@ class PrefixVARPlanner(nn.Module):
                     codes_k = _refine_scale(maps, k, seg_start, l)
                 elif k in chunked:
                     codes_k = _chunk_ar_scale(maps, k, seg_start, l)
+                elif k in sampled:
+                    codes_k = {"pos": _sampler_pos_scale,
+                               "seg": _sampler_seg_scale,
+                               "ar": _sampler_ar_scale}[sample_mode](
+                                   maps, k, seg_start, l)
                 else:
                     codes_k, _ = _sample_block(maps, k, seg_start, l)
             codes_out.append(codes_k)
@@ -568,7 +886,9 @@ class PrefixVARPlanner(nn.Module):
 # exact-zero contributions until trained, so tolerant loading is exact
 _OPTIONAL_KEYS = {"null_prefix", "visible_proj.weight", "visible_proj.bias",
                   "visible_gate"}
-_OPTIONAL_PREFIXES = ("depth_projs.",)  # depth-AR heads (2026-09-01), zero-init
+# depth-AR heads (2026-09-01) and the intra-scale sampler (2026-09-02) are both
+# zero-init no-ops, so a base ckpt lacking them loads exactly
+_OPTIONAL_PREFIXES = ("depth_projs.", "sampler.")
 
 
 def load_prefix_planner_state(planner, state_dict):

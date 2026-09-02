@@ -130,6 +130,14 @@ class PlannerConfig:
     # parallel-head training/sampling; the 2x2 intra-scale ablation's
     # "segment-parallel" arms)
     depth_ar: bool = True
+    # intra-scale sampling transformer (models/sampling_transformer.py): a
+    # small module over the CACHED trunk hidden of a scale, so MaskGIT /
+    # segment / AR refinement passes cost a 2-layer sampler forward instead of
+    # a full trunk forward. Zero-init out_proj -> exact no-op until finetuned.
+    sampler: bool = False
+    sampler_layers: int = 2
+    sampler_width: int = 384
+    sampler_heads: int = 6
     prompt_encoder: str = "bert-base-uncased"
     tokenizer_run_dir: str = ""     # dir containing the frozen tokenizer ckpt
     codes_dir: str = ""             # dir with codes_{split}.npy from dump_codes

@@ -73,6 +73,10 @@ def main():
     ap.add_argument("--chunk_scales", default="",
                     help="comma scale INDICES for fixed-order chunk-AR")
     ap.add_argument("--chunk_count", type=int, default=0)
+    ap.add_argument("--sample_mode", default="",
+                    help="intra-scale sampler decode: 'pos:<scales>:<K>' | "
+                         "'seg:<scales>:<K>' | 'ar:<scales>', where <scales> "
+                         "is a comma list of scale INDICES or 'all'")
     ap.add_argument("--max_prompt_tokens", type=int, default=0,
                     help="0 = the tokenizer window (the whole prompt fits)")
     ap.add_argument("--chain_cap", type=int, default=4)
@@ -97,12 +101,19 @@ def main():
     ckpt_path = find_resume_ckpt(out_dir) if args.ckpt == "auto" else args.ckpt
     assert ckpt_path and Path(str(ckpt_path)).exists(), f"no planner ckpt in {out_dir}"
     payload = load_checkpoint(ckpt_path, map_location=device)
+    # the sampler is a finetune-time addition: attach it whenever the ckpt
+    # carries its weights, so the config need not track which run has one
+    use_sampler = cfg.planner.sampler or any(
+        k.startswith("sampler.") for k in payload["model"])
     planner = PrefixVARPlanner(
         scales=scales, seq_len=seq_len, codebooks=stack_codebooks(tokenizer.msrvq),
         d_model=cfg.planner.d_model, n_layers=cfg.planner.n_layers,
         n_heads=cfg.planner.n_heads, ffn_mult=cfg.planner.ffn_mult,
         rope_theta=cfg.planner.rope_theta,
-        upsample_mode=tok_quant_cfg.upsample_mode).to(device)
+        upsample_mode=tok_quant_cfg.upsample_mode, sampler=use_sampler,
+        sampler_layers=cfg.planner.sampler_layers,
+        sampler_width=cfg.planner.sampler_width,
+        sampler_heads=cfg.planner.sampler_heads).to(device)
     from models.prefix_planner import load_prefix_planner_state
     load_prefix_planner_state(planner, payload["model"])
     planner.eval()
@@ -123,6 +134,20 @@ def main():
                     if args.chunk_scales else None)
     if chunk_scales is not None:
         assert args.chunk_count > 1, "--chunk_scales requires --chunk_count > 1"
+    sample_mode, sample_scales, sample_steps = "", None, 0
+    if args.sample_mode:
+        parts = args.sample_mode.split(":")
+        sample_mode = parts[0]
+        assert sample_mode in ("pos", "seg", "ar"), \
+            f"--sample_mode must start with pos|seg|ar, got '{args.sample_mode}'"
+        assert len(parts) == (2 if sample_mode == "ar" else 3), \
+            "--sample_mode is 'pos:<scales>:<K>' | 'seg:<scales>:<K>' | 'ar:<scales>'"
+        sample_scales = (list(range(K)) if parts[1] == "all"
+                         else [int(x) for x in parts[1].split(",")])
+        if sample_mode != "ar":
+            sample_steps = int(parts[2])
+            assert sample_steps > 0, "--sample_mode pos/seg need K > 0"
+        assert use_sampler, "--sample_mode needs a sampler-equipped checkpoint"
     max_prompt = args.max_prompt_tokens or seq_len
 
     gen_rng = torch.Generator(device=device).manual_seed(args.seed)
@@ -146,7 +171,10 @@ def main():
                                     refine_steps=args.refine_steps,
                                     refine_noise=args.refine_noise,
                                     chunk_scales=chunk_scales,
-                                    chunk_count=args.chunk_count)
+                                    chunk_count=args.chunk_count,
+                                    sample_mode=sample_mode,
+                                    sample_scales=sample_scales,
+                                    sample_steps=sample_steps)
         with ac():
             logits = tokenizer.decode_latent(f_hat.to(
                 next(tokenizer.decoder.parameters()).dtype))

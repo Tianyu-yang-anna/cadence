@@ -1,0 +1,48 @@
+# CADENCE-LDM: continuous latent diffusion in the FROZEN CADENCE tokenizer
+# latent — the "TextLDM family" controlled baseline row (TextLDM, Jiang et
+# al., arXiv:2605.07748; no code released, so we implement the recipe, not
+# the model). Byte-identical copy of configs/planner_prefix_owt2_pqps.yaml
+# except run_name, micro_batch_size and the comments: same tokenizer, same
+# codes, same bins, same trunk, same 2B-gradient-token budget.
+#   7630 steps x 256 windows x 1024 latent positions = 2.0004e9
+# Diffusion hyperparameters (objective, EMA, sampler) are CLI flags, not
+# config keys — utils/config.py rejects unknown keys.
+# Paired run: ldiff_owt2_pqsh.yaml (identical except tokenizer/codes).
+run_name: ldiff_owt2_pqps
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 1024
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/owt2_gpt2
+  num_workers: 4
+planner:                          # reused section: trunk + tokenizer wiring
+  d_model: 768
+  n_layers: 12
+  n_heads: 12
+  ffn_mult: 4
+  cond_drop_p: 0.1                # CFG, paired with the planner's setting
+  tokenizer_run_dir: /tmp/cadence_local/runs/vqvae_owt2_1024_pqps
+  codes_dir: /tmp/cadence_local/data/codes_owt2_1024_pqps
+  doc_aware: true
+  doc_mode: target
+  prompt_mixed: true
+  history_max: 0
+train:
+  max_steps: 7630
+  batch_size: 256
+  micro_batch_size: 8             # seq 2048 (prefix 1024 + target 1024)
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 400
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  bf16: true
+  log_interval: 50
+  eval_interval: 500
+  eval_batches: 20
+  save_interval: 1000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

@@ -1,24 +1,30 @@
 #!/bin/bash
-# Prompted-continuation eval for BD3-LM / MDLM baselines: 8 single-GPU
-# workers shard each benchmark's rows (gen_prompted.py --shard i --nshards 8),
-# shards are concatenated and scored with eval_generation.py.
-# Env: RUN_NAME (required), FULL_NAME (ckpt dir on Volume), ALGO (bd3lm|mdlm),
-#      DATA_NAME (bins), BLOCK_SIZE (default 16), BENCHMARKS, N (default 1000),
-#      TAG, NUM_STEPS (optional denoise steps per stride), EXTRA_ARGS.
+# Prompted-continuation eval for the SEDD baseline (Lou et al. ICML 2024,
+# arXiv 2310.16834), run through the kuleshov-group reimplementation already
+# vendored in third_party/bd3lms (configs/algo/sedd.yaml). Copy of
+# bd3gen_entry.sh with gen_prompted_sedd.py (single fixed-length 1024 window,
+# analytic sampler) instead of gen_prompted.py (semi-AR strides).
+#
+# NFE = NUM_STEPS + 1 (analytic updates + final denoiser update). This is the
+# family's NFE knob for the "quality vs forward passes" figure. Sweep it with
+# separate jobs: NUM_STEPS=1024 / 128 / 32 / 8, each with its own TAG.
+#
+# Env: RUN_NAME (required), FULL_NAME (ckpt dir on Volume, e.g. sedd_owt2),
+#      DATA_NAME (bins), NUM_STEPS (default 1024), BENCHMARKS, N (default
+#      1000), TAG, EXTRA_ARGS (hydra overrides, e.g. sampling.nucleus_p=0.99).
 : "${RUN_NAME:?RUN_NAME env var is required}"
 : "${FULL_NAME:?FULL_NAME env var is required}"
-ALGO="${ALGO:-bd3lm}"
-BLOCK_SIZE="${BLOCK_SIZE:-16}"
-ATTN_BACKEND="${ATTN_BACKEND:-sdpa}"  # flex asserts out at inference for every algo
+BLOCK_SIZE="${BLOCK_SIZE:-1024}"   # SEDD is full-sequence: block_size == length
+NUM_STEPS="${NUM_STEPS:-1024}"
 BENCHMARKS="${BENCHMARKS:-wikipedia wikisource tinystories lm1b}"
 N="${N:-1000}"
 TAG="${TAG:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
-export JOB_TAG="bd3gen-$RUN_NAME"
+export JOB_TAG="seddgen-$RUN_NAME"
 source "$(dirname "${BASH_SOURCE[0]}")/bootstrap.sh"
 
 start_heartbeat
-log "bd3gen run=$RUN_NAME algo=$ALGO ckpt=$FULL_NAME benchmarks=[$BENCHMARKS] n=$N tag=$TAG"
+log "seddgen run=$RUN_NAME ckpt=$FULL_NAME steps=$NUM_STEPS (nfe=$((NUM_STEPS + 1))) benchmarks=[$BENCHMARKS] n=$N tag=$TAG"
 ensure_env || { log "ABORT: env"; exit 1; }
 ensure_data || { log "ABORT: data"; exit 1; }
 "$PY" -m pip install --quiet lightning==2.5.0.post0 hydra-core==1.3.2 \
@@ -44,8 +50,6 @@ trap 'kill "$PUSH_PID" "$HB_PID" 2>/dev/null' EXIT
 BINS="$LOCAL_ROOT/data/${DATA_NAME:-owt2_gpt2}"
 NSHARDS=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')
 [ "${NSHARDS:-0}" -ge 1 ] || NSHARDS=1
-STEPARG=""
-[ -n "${NUM_STEPS:-}" ] && STEPARG="+prompted.num_steps=$NUM_STEPS"
 
 rc_all=0
 for b in $BENCHMARKS; do
@@ -55,9 +59,9 @@ for b in $BENCHMARKS; do
     # shellcheck disable=SC2086
     (cd "$CODE/third_party/bd3lms" && env WANDB_MODE=disabled \
         HYDRA_FULL_ERROR=1 CUDA_VISIBLE_DEVICES=$s \
-        "$PY" -u gen_prompted.py \
-        model=small algo="$ALGO" block_size="$BLOCK_SIZE" model.length=1024 \
-        model.attn_backend="$ATTN_BACKEND" \
+        "$PY" -u gen_prompted_sedd.py \
+        model=small algo=sedd block_size="$BLOCK_SIZE" model.length=1024 \
+        model.attn_backend=sdpa \
         data=openwebtext-split \
         "data.train=binwindows:$BINS" "data.valid=binwindows:$BINS" \
         data.insert_train_special=False data.insert_valid_special=False \
@@ -69,8 +73,9 @@ for b in $BENCHMARKS; do
         "+prompted.out=$OUT/shard_${b}_$s.jsonl" \
         "+prompted.n=$N" "+prompted.seed=$s" \
         "+prompted.shard=$s" "+prompted.nshards=$NSHARDS" \
+        "+prompted.num_steps=$NUM_STEPS" \
         "hydra.run.dir=$LOCAL_ROOT/hydra_gen_$s" \
-        $STEPARG $EXTRA_ARGS) >> "$LOG_LOCAL.gen$s" 2>&1 &
+        $EXTRA_ARGS) >> "$LOG_LOCAL.gen$s" 2>&1 &
     pids+=($!)
   done
   rc=0
@@ -89,7 +94,7 @@ done
 mkdir -p "$VOL/results/benchgen_$FULL_NAME"
 cp -f "$OUT"/gens_*.jsonl "$OUT"/gens_*.metrics.json \
     "$VOL/results/benchgen_$FULL_NAME/" 2>/dev/null
-[ $rc_all -ne 0 ] && { log "bd3gen FAILED (partial results copied)"; exit 1; }
+[ $rc_all -ne 0 ] && { log "seddgen FAILED (partial results copied)"; exit 1; }
 touch "$LOCAL_ROOT/bg.done" && cp -f "$LOCAL_ROOT/bg.done" \
-    "$VOL/status/bd3gen-$FULL_NAME$TAG.done"
-log "bd3gen DONE run=$RUN_NAME"
+    "$VOL/status/seddgen-$FULL_NAME$TAG.done"
+log "seddgen DONE run=$RUN_NAME"

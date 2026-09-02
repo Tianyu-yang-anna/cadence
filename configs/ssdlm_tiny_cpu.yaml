@@ -1,0 +1,37 @@
+# Tiny CPU smoke config for the SSD-LM baseline (seconds, no GPU).
+# Real GPT-2 vocab (so the detokenizer path is exercised) but a 2L x 64 trunk,
+# a 64-token window and an 8-token block.
+run_name: ssdlm_tiny_cpu
+seed: 0
+model:
+  vocab_size: 50257
+  seq_len: 64              # 56 ctx + 8 block
+  d_model: 64
+  rope_theta: 10000.0
+  trunk: {num_layers: 2, num_heads: 2, ffn_mult: 2, dropout: 0.0}
+ssdlm:
+  block_size: 8
+  k: 5.0
+  t_train: 5000
+  rand_ctx_p: 0.5
+data:
+  bin_dir: /tmp/cadence_ssdlm_smoke/data
+  num_workers: 0
+  limit_windows: 256
+train:
+  max_steps: 2
+  batch_size: 4
+  micro_batch_size: 2
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 1
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  bf16: false
+  log_interval: 1
+  eval_interval: 2
+  eval_batches: 1
+  save_interval: 2
+  keep_last: 1
+  out_dir: /tmp/cadence_ssdlm_smoke/runs/${run_name}

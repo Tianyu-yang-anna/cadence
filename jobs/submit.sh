@@ -19,6 +19,10 @@ case "$GPU" in
   16xh100) GPUS=16; GPU_TYPE=GPU_8xH100 ;;   # 2 nodes
   32xh100) GPUS=32; GPU_TYPE=GPU_8xH100 ;;   # 4 nodes
   64xh100) GPUS=64; GPU_TYPE=GPU_8xH100 ;;   # 8 nodes
+  # sgcli accepts only: h100_80gb | a10 | GPU_1xA10 | GPU_8xH100 | GPU_1xH100.
+  # There is no H200 type here, and GPU_8xH100 is a single workspace-wide quota
+  # pool (32 nodes) shared with other users — a submit can fail on quota even
+  # when our own jobs hold only a few nodes.
   *) echo "unknown gpu '$GPU' (1xh100|8xh100|16xh100|32xh100|64xh100)"; exit 1 ;;
 esac
 
@@ -47,6 +51,9 @@ YAML=".job-$NAME.yaml"
   echo "  type: snapshot"
   echo "  snapshot:"
   echo "    repo_path: ."
+  # opt-in only: snapshots the working tree as-is. Use it when the entry script
+  # does not touch files that are mid-edit.
+  [ -n "${ALLOW_UNCOMMITTED:-}" ] && echo "    allow_uncommitted: true"
   echo "command: |"
   echo "  bash \$CODE_SOURCE_PATH/jobs/${STAGE}_entry.sh"
 } > "$YAML"

@@ -8,6 +8,12 @@ refine_scales/refine_steps). Per sample: pick one scale from --mask_scales
 masked positions of that scale 1.0, revealed 0.0, every other scale
 --retain_weight. cond_drop stays active so CFG capability is preserved.
 
+--sampler switches the reveal onto the intra-scale SamplingTransformer
+(models/sampling_transformer.py) instead of the input-side visible pathway:
+--mask_mode sampler_pos / sampler_seg / sampler_causal / sampler_mix train the
+decode orders that generate()'s 'pos' / 'seg' / 'ar' modes run at inference,
+where the trunk hidden is cached once per scale.
+
 The finetuned weights land in a NEW run dir (--set run_name=<base>_mg via
 the job entry); the source dir is read-only.
 
@@ -53,12 +59,25 @@ def main():
     ap.add_argument("--steps", type=int, default=5000)
     ap.add_argument("--mask_scales", default="",
                     help="comma scale INDICES to refine-train (default: two finest)")
+    ap.add_argument("--eval_scales", default="",
+                    help="comma scale INDICES the arm's eval rows will decode "
+                         "(default: --mask_scales); asserted to be a subset so "
+                         "an evaluated scale can never be out of distribution")
     ap.add_argument("--retain_weight", type=float, default=0.5)
+    ap.add_argument("--sampler", action="store_true",
+                    help="attach the intra-scale SamplingTransformer (also "
+                         "settable as planner.sampler=true)")
     ap.add_argument("--mask_mode", default="bernoulli",
-                    choices=["bernoulli", "chunk_prefix", "none"],
+                    choices=["bernoulli", "chunk_prefix", "none",
+                             "sampler_pos", "sampler_seg", "sampler_causal",
+                             "sampler_mix"],
                     help="bernoulli=MaskGIT random reveal; chunk_prefix=reveal "
                          "the first m of --chunks contiguous chunks (chunk-AR "
-                         "training); none=plain CE continuation (no reveal)")
+                         "training); none=plain CE continuation (no reveal); "
+                         "sampler_*=route the reveal through the sampler "
+                         "(pos=position MaskGIT, seg=random segment subset at "
+                         "every position of every scale, causal=strict "
+                         "left-to-right, mix=50/50 pos/causal)")
     ap.add_argument("--chunks", type=int, default=16,
                     help="chunk grid for chunk_prefix (inference chunk counts "
                          "that divide this grid stay train-consistent)")
@@ -94,14 +113,30 @@ def main():
     S = tokenizer.msrvq.pq_segments
     assert S > 0
 
+    sampler_mode = {"sampler_pos": "position", "sampler_seg": "segment",
+                    "sampler_causal": "causal"}.get(args.mask_mode, "position")
+    sampler_arm = args.mask_mode.startswith("sampler_")
+    use_sampler = args.sampler or cfg.planner.sampler
+    assert use_sampler or not sampler_arm, \
+        f"--mask_mode {args.mask_mode} requires --sampler"
+
     planner = PrefixVARPlanner(
         scales=scales, seq_len=seq_len, codebooks=stack_codebooks(tokenizer.msrvq),
         d_model=cfg.planner.d_model, n_layers=cfg.planner.n_layers,
         n_heads=cfg.planner.n_heads, ffn_mult=cfg.planner.ffn_mult,
         rope_theta=cfg.planner.rope_theta,
         upsample_mode=tok_quant_cfg.upsample_mode,
-        cond_drop_p=cfg.planner.cond_drop_p).to(device)
-    if not cfg.planner.depth_ar:
+        cond_drop_p=cfg.planner.cond_drop_p, sampler=use_sampler,
+        sampler_layers=cfg.planner.sampler_layers,
+        sampler_width=cfg.planner.sampler_width,
+        sampler_heads=cfg.planner.sampler_heads).to(device)
+    # the POSITION arms read out through the depth chain (the two axes stay
+    # orthogonal), so depth_projs are in the graph and must train — otherwise
+    # 'pos'/'ar' would also silently turn off depth-AR, the largest measured
+    # lever. Only sampler_seg freezes them: there the sampler is the single
+    # segment-coupling mechanism under test and its control is the fixed-order
+    # depth-AR baseline.
+    if not cfg.planner.depth_ar or args.mask_mode == "sampler_seg":
         for p in planner.depth_projs.parameters():
             p.requires_grad_(False)
 
@@ -124,6 +159,18 @@ def main():
 
     mask_scale_ids = ([int(x) for x in args.mask_scales.split(",")]
                       if args.mask_scales else [len(scales) - 2, len(scales) - 1])
+    if sampler_arm:
+        # a scale the decode routes through the sampler but the finetune never
+        # trained is an OOD eval row; a loud failure beats a silent one
+        assert args.mask_scales, \
+            "sampler arms must pass --mask_scales explicitly (the default two " \
+            "finest excludes scales the planned eval rows decode)"
+        eval_ids = ([int(x) for x in args.eval_scales.split(",")]
+                    if args.eval_scales else mask_scale_ids)
+        missing = sorted(set(eval_ids) - set(mask_scale_ids))
+        assert not missing, \
+            f"--eval_scales {missing} are decoded by the sampler but absent " \
+            f"from --mask_scales {mask_scale_ids}"
     starts = [sum(scales[:k]) for k in range(len(scales))]
     L_total = sum(scales)
 
@@ -183,10 +230,48 @@ def main():
 
             # per-sample refine target scale + mode-specific reveal pattern
             pick = torch.randint(0, len(mask_scale_ids), (B,), device=device)
-            weights = torch.full((B, L_total), args.retain_weight, device=device)
+            weights = torch.full((B, L_total, S), args.retain_weight, device=device)
             vis_mask = torch.zeros(B, L_total, dtype=torch.bool, device=device)
+            smask, smode = None, sampler_mode
             if args.mask_mode == "none":
                 weights.fill_(1.0)  # plain CE continuation; reveal nothing
+            elif args.mask_mode == "sampler_seg":
+                # every position of EVERY scale reveals a uniformly random
+                # subset of its S segments: what makes confidence-ordered
+                # segment decoding in-distribution. The residual itself is
+                # gated to --mask_scales by the planner, so scales the decode
+                # leaves alone still train on the plain readout.
+                n_rev = torch.randint(0, S, (B, L_total, 1), device=device)
+                smask = torch.rand(B, L_total, S, device=device).argsort(-1) < n_rev
+                weights = (~smask).float()
+            elif sampler_arm:
+                arm = args.mask_mode
+                if arm == "sampler_mix":
+                    # coin flip per MICRO-BATCH, not per sample: the causal
+                    # attention mask is shared across the batch
+                    arm = ("sampler_causal" if float(torch.rand(())) < 0.5
+                           else "sampler_pos")
+                    smode = "causal" if arm == "sampler_causal" else "position"
+                smask = torch.zeros(B, L_total, dtype=torch.bool, device=device)
+                # EVERY listed scale gets a reveal pattern in EVERY sample (no
+                # per-sample pick): the decode runs the sampler at all of them,
+                # so leaving the unpicked ones on an all-mask committed stream
+                # would train a state generate() never visits
+                for k in mask_scale_ids:
+                    a, l = starts[k], scales[k]
+                    w = weights[:, a:a + l]
+                    if arm == "sampler_causal":
+                        # strict lower-triangular reveal (the sampler shifts
+                        # the code stream one position right), so all l
+                        # positions are supervised in one teacher-forced pass
+                        smask[:, a:a + l] = True
+                        w[:] = 1.0
+                    else:
+                        r = torch.cos(math.pi / 2 * torch.rand(B, 1, device=device))
+                        masked = torch.rand(B, l, device=device) < r
+                        smask[:, a:a + l] = ~masked
+                        w[masked] = 1.0
+                        w[~masked] = 0.0
             else:
                 r = torch.cos(math.pi / 2 * torch.rand(B, device=device))
                 for i, k in enumerate(mask_scale_ids):
@@ -217,13 +302,24 @@ def main():
             sync_ctx = model.no_sync() if ddp and m < n_accum - 1 else nullcontext()
             with sync_ctx:
                 with ac():
+                    # a sampler arm leaves visible_mask None: the planner's
+                    # own all-False fallback keeps the input-side pathway in
+                    # the graph without perturbing the trunk
                     logits = model(codes, prefix_e, prefix_mask=pmask,
-                                   visible_codes=codes, visible_mask=vis_mask)
+                                   visible_codes=None if smask is not None else codes,
+                                   visible_mask=None if smask is not None else vis_mask,
+                                   sampler_codes=codes if smask is not None else None,
+                                   sampler_mask=smask, sampler_mode=smode,
+                                   sampler_scales=mask_scale_ids)
                     N = logits.shape[-1]
                     ce = F.cross_entropy(
                         logits.float().reshape(-1, N), codes.reshape(-1),
-                        reduction="none").reshape(B, L_total, S).mean(-1)
-                    loss = (ce * weights).sum() / weights.sum().clamp_min(1.0)
+                        reduction="none").reshape(B, L_total, S)
+                    # normalise PER SAMPLE then average: arms differ in mask
+                    # mass, and a global denominator silently reweights the
+                    # batch toward the samples that revealed the least
+                    loss = ((ce * weights).sum(dim=(1, 2))
+                            / weights.sum(dim=(1, 2)).clamp_min(1.0)).mean()
                 (loss / n_accum).backward()
             win["loss"] += float(loss)
             win["micro"] += 1

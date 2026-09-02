@@ -65,6 +65,7 @@ case "${SCHED_PRESET:-}" in
            TOPP_SCHEDULE="0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4"
            CFG_SCHEDULE="7,7,7,7,7,7,7,7,4,2,1.5" ;;
 esac
+SAMPLE_MODE="${SAMPLE_MODE:-}"       # intra-scale sampler decode (prefix planner)
 BEST_OF="${BEST_OF:-1}"              # best-of-N reranking (1 = off)
 RERANK_SCORER="${RERANK_SCORER:-}"   # optional scorer override (gpt2-large)
 TAG="${TAG:-}"
@@ -129,6 +130,9 @@ for b in $BENCHMARKS; do
       [ -n "$RNOISE" ] && SCHED="$SCHED --refine_noise $RNOISE"
     fi
     [ -n "$CHUNKAR" ] && SCHED="$SCHED --chunk_scales ${CHUNKAR%%:*} --chunk_count ${CHUNKAR##*:}"
+    # SAMPLE_MODE='pos:<scales>:<K>' | 'seg:<scales>:<K>' | 'ar:<scales>'
+    # (intra-scale sampler decode; needs a --sampler finetuned checkpoint)
+    [ -n "$SAMPLE_MODE" ] && SCHED="$SCHED --sample_mode $SAMPLE_MODE"
     run_step "generate $b" bash -c \
       "cd '$CODE' && '$PY' generate_prefix.py --config '$CONFIG' \
         --set 'run_name=$PLANNER_FULL' --set 'planner.tokenizer_run_dir=$LOCAL_ROOT/runs/$TOK_FULL' --benchmark '$BDIR/$b.jsonl' --n '$N' \
