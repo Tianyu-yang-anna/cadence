@@ -80,6 +80,27 @@ class _Block(nn.Module):
         x = x + self.mlp(self.ln2(x))
         return x
 
+    def step(self, x, positions, k_cache, v_cache, i):
+        """Single-position incremental forward for a strictly causal decode:
+        write this position's post-RoPE K/V into the caller's preallocated
+        cache at slot i and attend slots 0..i (no mask — every cached slot is
+        an earlier position of the same block). x/positions cover ONE position.
+
+        INFERENCE ONLY: an activation cached across steps is invisible to the
+        autograd graph the DDP reducer walks (find_unused_parameters=False),
+        so no training path may call this."""
+        B, _, C = x.shape
+        h = self.ln1(x)
+        qkv = self.qkv(h).view(B, 1, 3, self.n_heads, -1)
+        q, k, v = (t.transpose(1, 2) for t in qkv.unbind(2))
+        q = _apply_rope_at(q, positions, self.theta)
+        k_cache[:, :, i:i + 1] = _apply_rope_at(k, positions, self.theta)
+        v_cache[:, :, i:i + 1] = v
+        out = F.scaled_dot_product_attention(
+            q, k_cache[:, :, :i + 1], v_cache[:, :, :i + 1])
+        x = x + self.proj(out.transpose(1, 2).reshape(B, 1, C))
+        return x + self.mlp(self.ln2(x))
+
 
 class PrefixVARPlanner(nn.Module):
     def __init__(self, scales: list[int], seq_len: int, codebooks: torch.Tensor,
@@ -559,7 +580,8 @@ class PrefixVARPlanner(nn.Module):
                  chunk_count: int = 0,
                  sample_mode: str = "",
                  sample_scales: list[int] | None = None,
-                 sample_steps: int = 0):
+                 sample_steps: int = 0,
+                 sample_cache: bool = True):
         """Next-scale sampling; K forwards, segments sampled INDEPENDENTLY
         within a position (the known PQ risk — depth-AR is the planned
         fallback if the segment-coupling probe bites). cfg_scale w != 1 runs
@@ -567,7 +589,10 @@ class PrefixVARPlanner(nn.Module):
         logits_u + w * (logits_c - logits_u); w == 1 keeps the exact
         single-branch fast path. sample_mode 'pos'/'seg'/'ar' routes
         sample_scales through the intra-scale sampler instead (trunk hidden
-        computed ONCE per scale, then only the sampler iterates). Returns
+        computed ONCE per scale, then only the sampler iterates);
+        sample_cache=False makes 'ar' recompute the whole block at every
+        position (the O(l^2) reference the KV-cached decode is checked
+        against). Returns
         (codes [B, sum(scales), S], f_hat [B, seq_len, d_code]) — f_hat is
         the decoder input (identical to ladder_latent(codes)) and the
         next-window chain prefix."""
@@ -820,11 +845,41 @@ class PrefixVARPlanner(nn.Module):
                 committed.scatter_(2, keep, True)
             return cur
 
+        def _sampler_ar_cached(maps, k, seg_start, l):
+            """_sampler_ar_scale at O(l) sampler token-forwards instead of
+            O(l^2): once position i-1 is drawn the causal token stream of every
+            position <= i is frozen (the right-shift makes token j carry
+            position j-1's committed codes), so the sampler keeps its per-layer
+            K/V and step i pushes ONE token through the blocks. Each CFG branch
+            keeps its own cache over its own hidden and the two still mix at
+            the logit level, position by position."""
+            h_c, h_u = _cached_hidden(maps, k, seg_start, l)
+            coords = coords_all[seg_start:seg_start + l]
+            cur = torch.zeros(B, l, self.segments, dtype=torch.long, device=device)
+            kv_c = self.sampler.start_scale(h_c, k, coords)
+            kv_u = None if h_u is None else self.sampler.start_scale(h_u, k, coords)
+            for i in range(l):
+                # position i's token reads position i-1's codes; at i == 0 the
+                # step forces the mask token and this slice is unused
+                j = max(i - 1, 0)
+                prev = self.dequant_scale(cur[:, j:j + 1], k).view(
+                    B, self.segments, -1)
+                sl = slice(i, i + 1)
+                st_c = h_c[:, sl] + self.sampler.step(kv_c, i, prev).to(h_c.dtype)
+                st_u = None
+                if kv_u is not None:
+                    st_u = h_u[:, sl] + self.sampler.step(kv_u, i, prev).to(h_u.dtype)
+                s_codes, _ = _depth_draw(st_c, st_u, k, cur[:, sl])
+                cur[:, sl] = s_codes
+            return cur
+
         def _sampler_ar_scale(maps, k, seg_start, l):
             """Strict left-to-right AR at chunk size 1 through the sampler's
             causal position mode: position i is conditioned on the committed
             codes of positions < i. Recompute-per-step (l sampler forwards
-            over the cached hidden, zero extra trunk forwards)."""
+            over the cached hidden, zero extra trunk forwards) — the reference
+            _sampler_ar_cached is checked against, reachable with
+            sample_cache=False."""
             h_c, h_u = _cached_hidden(maps, k, seg_start, l)
             coords = coords_all[seg_start:seg_start + l]
             cur = torch.zeros(B, l, self.segments, dtype=torch.long, device=device)
@@ -865,7 +920,8 @@ class PrefixVARPlanner(nn.Module):
                 elif k in sampled:
                     codes_k = {"pos": _sampler_pos_scale,
                                "seg": _sampler_seg_scale,
-                               "ar": _sampler_ar_scale}[sample_mode](
+                               "ar": (_sampler_ar_cached if sample_cache
+                                      else _sampler_ar_scale)}[sample_mode](
                                    maps, k, seg_start, l)
                 else:
                     codes_k, _ = _sample_block(maps, k, seg_start, l)

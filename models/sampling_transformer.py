@@ -17,6 +17,13 @@ That keeps the trained head's calibration and adds no per-scale S*N parameters.
 Both modes build tokens from ONE formula, so every parameter enters the
 autograd graph in either mode — DDP reducer rule (find_unused_parameters=False)
 for the finetune arms that only ever use one mode per step.
+
+start_scale()/step() add an INFERENCE-ONLY incremental version of causal
+position mode (strict AR at chunk size 1): the causal token stream of every
+committed position is frozen, so per-layer K/V are cached and a step costs ONE
+token instead of a whole-block recompute — O(l) sampler token-forwards per
+scale instead of O(l^2). forward() never builds a cache: an activation carried
+across steps sits outside the autograd graph the DDP reducer walks.
 """
 from __future__ import annotations
 
@@ -24,6 +31,24 @@ import math
 
 import torch
 import torch.nn as nn
+
+
+class _ScaleKVCache:
+    """One scale block's incremental decode state: the token part that does
+    NOT depend on the codes being decoded (in_proj(h) + scale_emb, built by the
+    same whole-block call the full-sequence path makes) and per-layer post-RoPE
+    K/V of the positions already stepped."""
+
+    def __init__(self, base: torch.Tensor, coords: torch.Tensor,
+                 n_layers: int, n_heads: int):
+        B, L, d_s = base.shape
+        self.base = base
+        self.coords = coords
+        self.n = 0
+        self.k = [torch.zeros(B, n_heads, L, d_s // n_heads,
+                              device=base.device, dtype=base.dtype)
+                  for _ in range(n_layers)]
+        self.v = [torch.zeros_like(t) for t in self.k]
 
 
 class SamplingTransformer(nn.Module):
@@ -147,3 +172,53 @@ class SamplingTransformer(nn.Module):
             x = blk(x, pos, mask)
         z = self.out_proj(self.ln_f(x))
         return z.view(B, L, S, self.d_model) if mode == "segment" else z
+
+    # ------------------------------------------- incremental causal decode
+
+    @torch.no_grad()
+    def start_scale(self, h: torch.Tensor, scale_idx, coords: torch.Tensor
+                    ) -> _ScaleKVCache:
+        """Open an incremental causal position-mode decode over ONE scale
+        block. h/coords are the same [B, l, d_model] / [l] the recompute path
+        gets, and the code-independent token part is built by the same
+        whole-block call, so a cached row carries the recompute path's value."""
+        assert coords.shape[0] == h.shape[1], "one RoPE coordinate per position"
+        dt = self.in_proj.weight.dtype
+        base = self.in_proj(h.to(dt))
+        base = base + (self.scale_emb.weight[scale_idx]
+                       if isinstance(scale_idx, int)
+                       else self.scale_emb(scale_idx)[None])
+        return _ScaleKVCache(base, coords.to(torch.float32), len(self.blocks),
+                             self.blocks[0].n_heads)
+
+    @torch.no_grad()
+    def step(self, cache: _ScaleKVCache, i: int, seg_vecs_prev: torch.Tensor,
+             committed_prev: torch.Tensor | None = None) -> torch.Tensor:
+        """Position i of the decode opened by start_scale -> [B, 1, d_model].
+
+        Reproduces forward()'s causal right-shift exactly: the token at
+        position i carries position i-1's code/flag stream and position 0 takes
+        the mask token. seg_vecs_prev is [B, S, seg_dim] for position i-1
+        (ignored at i == 0), committed_prev [B, S] or None for all-committed —
+        the strict-AR decode's case, where every earlier position is drawn."""
+        assert i == cache.n, f"cache holds {cache.n} positions, step {i} asked"
+        B, S = cache.base.shape[0], self.segments
+        dt = self.in_proj.weight.dtype
+        com = (torch.ones(B, 1, S, dtype=torch.bool, device=cache.base.device)
+               if committed_prev is None else committed_prev[:, None])
+        if i == 0:
+            com = torch.zeros_like(com)
+        sv = seg_vecs_prev.to(dt)[:, None]
+        cs = []
+        for s in range(S):
+            c = torch.where(com[..., s, None],
+                            self.code_proj[s](sv[..., s, :]),
+                            self.mask_tok)
+            cs.append(c + self.flag_emb(com[..., s].long())
+                      + self.seg_emb.weight[s])
+        x = cache.base[:, i:i + 1] + torch.stack(cs, dim=0).sum(0)
+        pos = cache.coords[i:i + 1]
+        for j, blk in enumerate(self.blocks):
+            x = blk.step(x, pos, cache.k[j], cache.v[j], i)
+        cache.n = i + 1
+        return self.out_proj(self.ln_f(x))

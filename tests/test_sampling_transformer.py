@@ -421,6 +421,56 @@ def test_training_readout_matches_decode_readout(monkeypatch, mode):
     assert next(it, None) is None, "unconsumed decode draws"
 
 
+# ------------------------------------------------ T7 incremental 'ar' decode
+
+@requires_planner_sampler
+@pytest.mark.parametrize("cfg", [1.0, 1.5])
+def test_ar_kv_cache_decodes_exactly_like_the_recompute_path(cfg):
+    """The KV-cached 'ar' decode is the recompute decode: same seed, same
+    committed order, same draws — codes and f_hat bit-identical. Both CFG
+    branches must be cached separately and still mix at the logit level, so
+    the guidance branch is parametrized."""
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(2, n_pad=5)
+    kwargs = dict(sample_mode="ar", sample_scales=[3], cfg_scale=cfg)
+    with torch.no_grad():
+        a, fa = planner.generate(pe, prefix_mask=pm, sample_cache=False,
+                                 generator=torch.Generator().manual_seed(7),
+                                 **kwargs)
+        b, fb = planner.generate(pe, prefix_mask=pm, sample_cache=True,
+                                 generator=torch.Generator().manual_seed(7),
+                                 **kwargs)
+    assert torch.equal(a, b), "cached 'ar' decode changed the codes"
+    assert torch.equal(fa, fb), "cached 'ar' decode changed f_hat"
+
+
+@requires_planner_sampler
+@pytest.mark.parametrize("cache,per_branch", [(False, SCALES[3]), (True, 1)])
+def test_ar_kv_cache_costs_one_token_per_position(cache, per_branch):
+    """The whole point: l steps of ONE sampler token instead of l recomputes
+    of the whole block. Counted as token-forwards through the sampler blocks
+    (2 CFG branches x 2 layers per step)."""
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(1)
+    seen = []
+
+    def counted(fn):
+        def wrapped(x, *args, **kwargs):
+            seen.append(x.shape[1])
+            return fn(x, *args, **kwargs)
+        return wrapped
+
+    for blk in planner.sampler.blocks:
+        blk.forward, blk.step = counted(blk.forward), counted(blk.step)
+    with torch.no_grad():
+        planner.generate(pe, prefix_mask=pm, cfg_scale=1.5, sample_mode="ar",
+                         sample_scales=[3], sample_cache=cache,
+                         generator=torch.Generator().manual_seed(7))
+    l, n_layers = SCALES[3], len(planner.sampler.blocks)
+    assert sum(seen) == 2 * n_layers * l * per_branch, \
+        f"cache={cache}: {sum(seen)} sampler token-forwards for l={l}"
+
+
 @requires_planner_sampler
 def test_sampler_residual_is_confined_to_its_scales():
     """Decision 2 in isolation: with a scale set given, the training readout
