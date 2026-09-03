@@ -30,7 +30,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from generate import load_detokenizer, run_benchmark
+from generate import load_detokenizer, plan_windows, run_benchmark
 from models.prefix_planner import PrefixVARPlanner, stack_codebooks
 from train_planner import load_frozen_tokenizer
 from utils.checkpoint import find_resume_ckpt, load_checkpoint
@@ -80,6 +80,9 @@ def main():
     ap.add_argument("--max_prompt_tokens", type=int, default=0,
                     help="0 = the tokenizer window (the whole prompt fits)")
     ap.add_argument("--chain_cap", type=int, default=4)
+    ap.add_argument("--shard", type=int, default=0,
+                    help="row shard index (rows[:n][shard::nshards])")
+    ap.add_argument("--nshards", type=int, default=1)
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -150,10 +153,35 @@ def main():
         assert use_sampler, "--sample_mode needs a sampler-equipped checkpoint"
     max_prompt = args.max_prompt_tokens or seq_len
 
+    rows = [json.loads(l)
+            for l in Path(args.benchmark).read_text().splitlines()][: args.n]
+    abs_idx = list(range(len(rows)))
+    if args.nshards > 1:
+        # worker sharding (one process per GPU); shards concat downstream
+        rows = rows[args.shard::args.nshards]
+        abs_idx = abs_idx[args.shard::args.nshards]
+
+    # run_benchmark carries ONE generator across rows, so a row's samples
+    # would depend on which shard it landed in. Reseed at every row boundary
+    # from --seed and the row's ABSOLUTE index instead: any --nshards then
+    # reproduces the unsharded run row for row (row_seeds holds one entry per
+    # gen_window call — the seed on a row's first window, None on its chained
+    # ones, whose stream continues from the row's own seed).
     gen_rng = torch.Generator(device=device).manual_seed(args.seed)
+    windows = [plan_windows(len(detok(r["reference"],
+                                      add_special_tokens=False)["input_ids"]),
+                            seq_len, args.chain_cap) for r in rows]
+    row_seeds = [args.seed * 1000000 + j if w == 0 else None
+                 for j, nw in zip(abs_idx, windows) for w in range(nw)]
+    calls = 0
 
     @torch.no_grad()
     def gen_window(cur: torch.Tensor, generator=gen_rng) -> torch.Tensor:
+        nonlocal calls
+        seed = row_seeds[calls]  # IndexError if run_benchmark's plan drifts
+        calls += 1
+        if seed is not None:
+            generator.manual_seed(seed)
         B, Lp = cur.shape
         assert Lp <= seq_len, f"prompt of {Lp} tokens exceeds window {seq_len}"
         ids = torch.full((B, seq_len), pad_id, dtype=torch.long, device=device)
@@ -180,13 +208,21 @@ def main():
                 next(tokenizer.decoder.parameters()).dtype))
         return logits.argmax(dim=-1)
 
-    rows = [json.loads(l)
-            for l in Path(args.benchmark).read_text().splitlines()][: args.n]
     log_line(f"benchmark {args.benchmark}: {len(rows)} rows "
-             f"(T={temps}, top_p={topps}, top_k={topks}, cfg={cfgs})")
+             f"(shard {args.shard}/{args.nshards}, T={temps}, top_p={topps}, "
+             f"top_k={topks}, cfg={cfgs})")
     run_benchmark(rows, detok, gen_window, seq_len, args.out,
                   max_prompt_tokens=max_prompt, chain_cap=args.chain_cap,
                   device=device, base_seed=args.seed)
+    assert calls == len(row_seeds), \
+        f"gen_window ran {calls}x, window plan expected {len(row_seeds)}"
+    if args.nshards > 1:
+        # restamp run_benchmark's within-shard row numbers with the absolute
+        # benchmark index, so concatenated shards carry unsharded indices
+        out = Path(args.out)
+        out.write_text("".join(
+            json.dumps({**json.loads(l), "index": j}) + "\n"
+            for l, j in zip(out.read_text().splitlines(), abs_idx)))
     log_line(f"wrote {args.out}")
 
 

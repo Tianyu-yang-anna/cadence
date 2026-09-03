@@ -1,7 +1,8 @@
 #!/bin/bash
 # Track 2 benchmark-protocol generation + evaluation (TextLDM Table 1).
 # Env: PLANNER_FULL (default planner_owt), TOK_FULL (default vqvae_owt_gpt2hybrid),
-#      CONFIG (default configs/planner_owt.yaml), BENCHMARKS, N, TEMP, TOPP, CFG, TAG.
+#      CONFIG (default configs/planner_owt.yaml), BENCHMARKS, N, TEMP, TOPP, CFG, TAG,
+#      NSHARDS (generate_prefix.py fan-out width, default = visible GPUs).
 PLANNER_FULL="${PLANNER_FULL:-planner_owt}"
 TOK_FULL="${TOK_FULL:-vqvae_owt_gpt2hybrid}"
 CONFIG="${CONFIG:-configs/planner_owt.yaml}"
@@ -112,6 +113,8 @@ run_step() {
 RERANK=""
 [ -n "$RERANK_SCORER" ] && RERANK="--rerank_scorer $RERANK_SCORER"
 GEN_SCRIPT="${GEN_SCRIPT:-generate.py}"
+NSHARDS="${NSHARDS:-$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')}"
+[ "${NSHARDS:-0}" -ge 1 ] || NSHARDS=1
 for b in $BENCHMARKS; do
   SCHED=""
   [ -n "$TEMP_SCHEDULE" ] && SCHED="$SCHED --temp_schedule $TEMP_SCHEDULE"
@@ -133,13 +136,32 @@ for b in $BENCHMARKS; do
     # SAMPLE_MODE='pos:<scales>:<K>' | 'seg:<scales>:<K>' | 'ar:<scales>'
     # (intra-scale sampler decode; needs a --sampler finetuned checkpoint)
     [ -n "$SAMPLE_MODE" ] && SCHED="$SCHED --sample_mode $SAMPLE_MODE"
-    run_step "generate $b" bash -c \
-      "cd '$CODE' && '$PY' generate_prefix.py --config '$CONFIG' \
-        --set 'run_name=$PLANNER_FULL' --set 'planner.tokenizer_run_dir=$LOCAL_ROOT/runs/$TOK_FULL' --benchmark '$BDIR/$b.jsonl' --n '$N' \
-        --temperature '$TEMP' --top_p '$TOPP' --cfg '${CFG_W:-1.0}' $SCHED \
-        --out '$OUT/gens_${b}${TAG}.jsonl'" \
-      && run_step "eval $b" "$PY" "$CODE/eval_generation.py" \
-          --gen "$OUT/gens_${b}${TAG}.jsonl"
+    log "generate $b ($NSHARDS shards)"
+    pids=()
+    for s in $(seq 0 $((NSHARDS - 1))); do
+      # shellcheck disable=SC2086
+      (cd "$CODE" && env CUDA_VISIBLE_DEVICES=$s "$PY" generate_prefix.py \
+          --config "$CONFIG" --set "run_name=$PLANNER_FULL" \
+          --set "planner.tokenizer_run_dir=$LOCAL_ROOT/runs/$TOK_FULL" \
+          --benchmark "$BDIR/$b.jsonl" --n "$N" \
+          --temperature "$TEMP" --top_p "$TOPP" --cfg "${CFG_W:-1.0}" $SCHED \
+          --shard "$s" --nshards "$NSHARDS" \
+          --out "$OUT/shard_${b}_$s.jsonl") >> "$LOG_LOCAL.g$s" 2>&1 &
+      pids+=($!)
+    done
+    rc=0
+    for p in "${pids[@]}"; do wait "$p" || rc=1; done
+    cat "$LOG_LOCAL".g* >> "$LOG_LOCAL" 2>/dev/null; rm -f "$LOG_LOCAL".g*
+    if [ $rc -ne 0 ]; then
+      log "STEP FAILED: generate $b (a shard died)"
+      FAILURES=$((FAILURES + 1)); push_log; continue
+    fi
+    # explicit shard order: a shard_${b}_* glob would sort 10 before 2
+    for s in $(seq 0 $((NSHARDS - 1))); do cat "$OUT/shard_${b}_$s.jsonl"; done \
+        > "$OUT/gens_${b}${TAG}.jsonl"
+    rm -f "$OUT"/shard_${b}_*.jsonl
+    run_step "eval $b" "$PY" "$CODE/eval_generation.py" \
+        --gen "$OUT/gens_${b}${TAG}.jsonl"
     push_log
     continue
   fi
@@ -158,7 +180,9 @@ for b in $BENCHMARKS; do
 done
 
 mkdir -p "$VOL/results/benchgen_$PLANNER_FULL"
-cp -f "$OUT"/*.jsonl "$OUT"/*.metrics.json "$VOL/results/benchgen_$PLANNER_FULL/" 2>/dev/null || true
+# gens_* only: a failed fan-out leaves shard_*.jsonl behind, which must not
+# land in results next to the real files
+cp -f "$OUT"/gens_*.jsonl "$OUT"/gens_*.metrics.json "$VOL/results/benchgen_$PLANNER_FULL/" 2>/dev/null || true
 if [ "$FAILURES" -eq 0 ]; then
   touch "$LOCAL_ROOT/bg.done" && cp -f "$LOCAL_ROOT/bg.done" "$VOL/status/benchgen-$PLANNER_FULL$TAG.done"
   log "benchgen DONE"
