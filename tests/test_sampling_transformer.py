@@ -495,3 +495,67 @@ def test_sampler_residual_is_confined_to_its_scales():
         "the sampler residual leaked into a scale the decode never samples"
     assert not torch.allclose(plain[:, STARTS[2]:STARTS[3]],
                               gated[:, STARTS[2]:STARTS[3]], atol=1e-6)
+
+
+def test_sampler_decode_ignores_the_legacy_visible_pathway():
+    """The input-side visible pathway and the sampler are two SEPARATE MaskGIT
+    implementations; a sampler decode must not consume the legacy one. Kept as
+    a test because the pathway stays in the graph for the DDP reducer rule and
+    is still reachable as the matched control arm (REFINE), so 'it is unused'
+    is not visible from the call site."""
+    books = torch.randn(4, 2, 16, 4)
+
+    def build(gate):
+        torch.manual_seed(0)
+        p = PrefixVARPlanner(scales=[1, 2, 4, 64], seq_len=64, codebooks=books,
+                             d_model=64, n_layers=2, n_heads=4, cond_drop_p=0.1,
+                             sampler=True, sampler_layers=2, sampler_width=32,
+                             sampler_heads=2).eval()
+        torch.manual_seed(123)
+        with torch.no_grad():
+            p.sampler.out_proj.weight.normal_(std=0.05)
+            p.sampler.out_proj.bias.normal_(std=0.05)
+            for pr in p.depth_projs:
+                pr.weight.normal_(std=0.05)
+            p.visible_proj.weight.normal_(std=1.0)
+            p.visible_proj.bias.normal_(std=1.0)
+            p.visible_gate.fill_(gate)
+        return p
+
+    pe = torch.randn(2, 64, 8)
+    pm = torch.ones(2, 64, dtype=torch.bool)
+    gen = lambda: torch.Generator().manual_seed(7)   # noqa: E731
+
+    for kwargs in (dict(sample_mode="seg", sample_scales=[0, 1, 2, 3], sample_steps=2),
+                   dict(sample_mode="pos", sample_scales=[3], sample_steps=4),
+                   dict(sample_mode="ar", sample_scales=[2])):
+        off, _ = build(0.0).generate(pe, prefix_mask=pm, generator=gen(), **kwargs)
+        on, _ = build(1.5).generate(pe, prefix_mask=pm, generator=gen(), **kwargs)
+        assert torch.equal(off, on), f"{kwargs['sample_mode']} consumed the visible pathway"
+
+    # the same perturbation MUST move the legacy path, or the test above is vacuous
+    off, _ = build(0.0).generate(pe, prefix_mask=pm, generator=gen(),
+                                 refine_scales=[3], refine_steps=4)
+    on, _ = build(1.5).generate(pe, prefix_mask=pm, generator=gen(),
+                                refine_scales=[3], refine_steps=4)
+    assert not torch.equal(off, on), "perturbation too weak — the check above proves nothing"
+
+
+def test_all_false_visible_mask_is_an_exact_no_op():
+    """Training on a sampler arm leaves visible_mask None, which the planner
+    turns into an all-False mask so the pathway stays in the autograd graph
+    (find_unused_parameters=False) while contributing exactly zero."""
+    torch.manual_seed(0)
+    books = torch.randn(4, 2, 16, 4)
+    p = PrefixVARPlanner(scales=[1, 2, 4, 64], seq_len=64, codebooks=books,
+                         d_model=64, n_layers=2, n_heads=4, cond_drop_p=0.1).eval()
+    with torch.no_grad():
+        p.visible_proj.weight.normal_(std=1.0)
+        p.visible_gate.fill_(0.9)
+    xt = torch.randn(2, 71, 64)
+    codes = torch.randint(0, 16, (2, 71, 2))
+    empty = torch.zeros(2, 71, dtype=torch.bool)
+    revealed = empty.clone()
+    revealed[:, 7:] = True
+    assert torch.equal(p._add_visible(xt, codes, empty), xt)
+    assert not torch.equal(p._add_visible(xt, codes, revealed), xt)
