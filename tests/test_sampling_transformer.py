@@ -471,6 +471,75 @@ def test_ar_kv_cache_costs_one_token_per_position(cache, per_branch):
         f"cache={cache}: {sum(seen)} sampler token-forwards for l={l}"
 
 
+# ------------------------------- T8 constrained left-to-right ('lr') decode
+
+@requires_planner_sampler
+@pytest.mark.parametrize("cfg", [1.0, 1.5])
+@pytest.mark.parametrize("steps", [1, 3])
+def test_lr_with_one_chunk_is_exactly_pos(cfg, steps):
+    """C=1 degenerates to position-axis MaskGIT: one chunk covering the scale
+    IS the 'pos' schedule, so the two decodes must be bit-identical at every
+    K (not merely close) or 'lr' is a different mechanism, not a
+    generalisation."""
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(2, n_pad=5)
+    common = dict(prefix_mask=pm, cfg_scale=cfg, sample_scales=[3],
+                  sample_steps=steps)
+    with torch.no_grad():
+        a, fa = planner.generate(pe, sample_mode="pos", **common,
+                                 generator=torch.Generator().manual_seed(7))
+        b, fb = planner.generate(pe, sample_mode="lr", sample_chunks=1,
+                                 **common,
+                                 generator=torch.Generator().manual_seed(7))
+    assert torch.equal(a, b), "lr C=1 is not the 'pos' decode"
+    assert torch.equal(fa, fb), "lr C=1 moved f_hat"
+
+
+@requires_planner_sampler
+@pytest.mark.parametrize("cfg", [1.0, 1.5])
+@pytest.mark.parametrize("cache", [False, True])
+def test_lr_with_one_position_per_chunk_is_exactly_ar(cfg, cache):
+    """C=l with K=1 degenerates to strict left-to-right: every chunk is a
+    single position, so both the recompute and the KV-cached 'ar' decode must
+    come back bit-identical."""
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(2, n_pad=5)
+    common = dict(prefix_mask=pm, cfg_scale=cfg, sample_scales=[3])
+    with torch.no_grad():
+        a, fa = planner.generate(pe, sample_mode="ar", sample_cache=cache,
+                                 **common,
+                                 generator=torch.Generator().manual_seed(7))
+        b, fb = planner.generate(pe, sample_mode="lr", sample_chunks=SCALES[3],
+                                 sample_steps=1, **common,
+                                 generator=torch.Generator().manual_seed(7))
+    assert torch.equal(a, b), "lr C=l,K=1 is not the 'ar' decode"
+    assert torch.equal(fa, fb), "lr C=l,K=1 moved f_hat"
+
+
+@requires_planner_sampler
+@pytest.mark.parametrize("C,K", [(1, 4), (2, 1), (2, 4), (4, 4), (16, 2),
+                                 (SCALES[3], 1), (2 * SCALES[3], 1)])
+def test_lr_nfe_is_chunks_x_passes_over_one_trunk_forward(C, K):
+    """The cost claim: C*K sampler passes per scale per CFG branch, and the
+    backbone stays at 2 forwards per scale (1 per CFG branch) whatever C and K
+    are — the trunk hidden is computed ONCE and only the sampler iterates."""
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(1)
+    trunk, passes = [], []
+    real_trunk = planner._trunk
+    planner._trunk = lambda *a, **kw: (trunk.append(1), real_trunk(*a, **kw))[1]
+    for blk in planner.sampler.blocks:
+        blk.forward = (lambda f: lambda *a, **kw:
+                       (passes.append(1), f(*a, **kw))[1])(blk.forward)
+    with torch.no_grad():
+        planner.generate(pe, prefix_mask=pm, cfg_scale=1.5, sample_mode="lr",
+                         sample_scales=[3], sample_chunks=C, sample_steps=K,
+                         generator=torch.Generator().manual_seed(7))
+    n_layers = len(planner.sampler.blocks)
+    assert len(trunk) == 2 * len(SCALES), "the backbone NFE moved"
+    assert len(passes) == 2 * n_layers * min(C, SCALES[3]) * K
+
+
 @requires_planner_sampler
 def test_sampler_residual_is_confined_to_its_scales():
     """Decision 2 in isolation: with a scale set given, the training readout
@@ -528,6 +597,8 @@ def test_sampler_decode_ignores_the_legacy_visible_pathway():
 
     for kwargs in (dict(sample_mode="seg", sample_scales=[0, 1, 2, 3], sample_steps=2),
                    dict(sample_mode="pos", sample_scales=[3], sample_steps=4),
+                   dict(sample_mode="lr", sample_scales=[3], sample_chunks=8,
+                        sample_steps=2),
                    dict(sample_mode="ar", sample_scales=[2])):
         off, _ = build(0.0).generate(pe, prefix_mask=pm, generator=gen(), **kwargs)
         on, _ = build(1.5).generate(pe, prefix_mask=pm, generator=gen(), **kwargs)

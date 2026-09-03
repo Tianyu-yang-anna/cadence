@@ -581,15 +581,18 @@ class PrefixVARPlanner(nn.Module):
                  sample_mode: str = "",
                  sample_scales: list[int] | None = None,
                  sample_steps: int = 0,
+                 sample_chunks: int = 0,
                  sample_cache: bool = True):
         """Next-scale sampling; K forwards, segments sampled INDEPENDENTLY
         within a position (the known PQ risk — depth-AR is the planned
         fallback if the segment-coupling probe bites). cfg_scale w != 1 runs
         a second null-prefix branch per scale and mixes
         logits_u + w * (logits_c - logits_u); w == 1 keeps the exact
-        single-branch fast path. sample_mode 'pos'/'seg'/'ar' routes
+        single-branch fast path. sample_mode 'pos'/'seg'/'ar'/'lr' routes
         sample_scales through the intra-scale sampler instead (trunk hidden
-        computed ONCE per scale, then only the sampler iterates);
+        computed ONCE per scale, then only the sampler iterates); 'lr' is the
+        constrained left-to-right MaskGIT, sample_chunks contiguous chunks
+        committed in order with sample_steps passes inside each;
         sample_cache=False makes 'ar' recompute the whole block at every
         position (the O(l^2) reference the KV-cached decode is checked
         against). Returns
@@ -613,15 +616,17 @@ class PrefixVARPlanner(nn.Module):
         chunked = set(chunk_scales or []) if chunk_count > 1 else set()
         assert not (refine & chunked), \
             "a scale cannot use both MaskGIT refinement and chunk-AR"
-        assert sample_mode in ("", "pos", "seg", "ar"), \
+        assert sample_mode in ("", "pos", "seg", "ar", "lr"), \
             f"unknown sample_mode {sample_mode}"
         sampled = set(sample_scales or []) if sample_mode else set()
         assert not sampled or self.sampler is not None, \
             "sample_mode requires a sampler-equipped planner"
         assert not (sampled & (refine | chunked)), \
             "a scale cannot use both the sampler and refine/chunk-AR"
-        if sampled and sample_mode in ("pos", "seg"):
+        if sampled and sample_mode in ("pos", "seg", "lr"):
             assert sample_steps > 0, f"sample_mode '{sample_mode}' needs steps"
+        if sampled and sample_mode == "lr":
+            assert sample_chunks > 0, "sample_mode 'lr' needs sample_chunks > 0"
         null_e = null_mask = None
         if any(c != 1.0 for k, c in enumerate(cfgs) if k not in forced):
             null_e = self.null_prefix.to(prefix_e.dtype)[None, None, :].expand(
@@ -820,6 +825,67 @@ class PrefixVARPlanner(nn.Module):
                 committed.scatter_(1, reopen, False)
             return cur
 
+        def _sampler_lr_scale(maps, k, seg_start, l):
+            """CONSTRAINED LEFT-TO-RIGHT MaskGIT, the general interpolation
+            between 'ar' and 'pos': split the l positions into sample_chunks
+            contiguous chunks (sizes differing by at most one, as
+            _chunk_ar_scale splits), walk the chunks STRICTLY left to right —
+            when chunk c is decoded every position of chunks < c is committed
+            and visible to the sampler, chunks > c are not yet decoded — and
+            inside chunk c run sample_steps MaskGIT passes: draw the chunk's
+            still-uncommitted positions, rank them by the mean per-segment
+            log-prob of the drawn codes, commit the cosine-schedule top ones,
+            commit everything left on the last pass. C=1 is 'pos', C>=l with
+            K=1 is 'ar'. Segment MaskGIT is NOT combined: the readout is the
+            fixed-order depth-AR chain (_depth_draw) 'pos' reads through, which
+            keeps the position and depth axes orthogonal.
+
+            The single-position limit runs the sampler's CAUSAL position
+            convention (tril + the one-position right shift of the code/flag
+            stream), wider chunks the unshifted full-attention one. Those are
+            the two conventions the two finetune arms supervise
+            (sampler_causal vs sampler_pos), and they are what makes C>=l,K=1
+            bit-identical to 'ar' and C=1 bit-identical to 'pos'; a chunk wider
+            than one position is refined bidirectionally, so it must not carry
+            the AR right-shift."""
+            C = max(1, min(sample_chunks, l))
+            base, rem = divmod(l, C)
+            sizes = [base + (1 if i < rem else 0) for i in range(C)]
+            causal = sample_chunks > 1 and C == l
+            h_c, h_u = _cached_hidden(maps, k, seg_start, l)
+            coords = coords_all[seg_start:seg_start + l]
+            cur = torch.zeros(B, l, self.segments, dtype=torch.long, device=device)
+            committed = torch.zeros(B, l, dtype=torch.bool, device=device)
+            done = 0
+            for sz in sizes:
+                sl = slice(done, done + sz)
+                for j in range(sample_steps):
+                    st_c, st_u = _sampler_states(h_c, h_u, k, cur, committed,
+                                                 "position", coords, causal=causal)
+                    # only the current chunk is read out: the depth chain over
+                    # the whole block would cost l/sz times the head work
+                    s_codes, lp = _depth_draw(st_c[:, sl],
+                                              None if st_u is None else st_u[:, sl],
+                                              k, cur[:, sl])
+                    cur[:, sl] = torch.where(committed[:, sl, None],
+                                             cur[:, sl], s_codes)
+                    if j == sample_steps - 1:
+                        break
+                    conf = torch.where(
+                        committed[:, sl],
+                        torch.full((B, sz), float("inf"), device=device),
+                        lp.mean(-1))
+                    n_open = max(1, int(sz * math.cos(
+                        math.pi / 2 * (j + 1) / sample_steps)))
+                    reopen = conf.topk(min(n_open, sz), dim=-1,
+                                       largest=False).indices
+                    committed[:, sl] = torch.ones(
+                        B, sz, dtype=torch.bool, device=device).scatter(
+                            1, reopen, False)
+                committed[:, sl] = True
+                done += sz
+            return cur
+
         def _sampler_seg_scale(maps, k, seg_start, l):
             """Segment-axis MaskGIT: at most S passes over the S segment
             slots, each committing the highest-confidence slots per position
@@ -920,6 +986,7 @@ class PrefixVARPlanner(nn.Module):
                 elif k in sampled:
                     codes_k = {"pos": _sampler_pos_scale,
                                "seg": _sampler_seg_scale,
+                               "lr": _sampler_lr_scale,
                                "ar": (_sampler_ar_cached if sample_cache
                                       else _sampler_ar_scale)}[sample_mode](
                                    maps, k, seg_start, l)

@@ -1,0 +1,45 @@
+# HMAR (CVPR 2025) Sec. 4.3 scale-wise loss reweighting arm. Identical to
+# planner_prefix_owt2_pqsh.yaml (same 2B budget: 7630 x 256 x 1024) except
+# train.scale_weight: the loss becomes sum_k w(k) * mean CE(scale k) with
+# w(k) the log-normal over the scale index k=1..11 generated from mu/sigma.
+# mu=1.98 sigma=0.50 is the least-squares fit of tools/scale_difficulty.py to
+# the baseline run's own min-test-CE curve (q1 3.372 ... q32 5.739 ... q1024
+# 3.606). Control arm = the same file with train.scale_weight=token.
+run_name: planner_prefix_owt2_pqsh_hmarw
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 1024
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/owt2_gpt2
+  num_workers: 4
+planner:
+  d_model: 768
+  n_layers: 12
+  n_heads: 12
+  ffn_mult: 4
+  cond_drop_p: 0.1
+  tokenizer_run_dir: /tmp/cadence_local/runs/vqvae_owt2_1024_pqsh
+  codes_dir: /tmp/cadence_local/data/codes_owt2_1024_pqsh
+  doc_aware: true
+  doc_mode: target
+  prompt_mixed: true
+  history_max: 0
+train:
+  max_steps: 7630
+  batch_size: 256
+  micro_batch_size: 4             # seq 3071 (prefix 1024 + ladder 2047)
+  lr: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 400
+  bf16: true
+  scale_weight: lognormal         # token | equal | lognormal
+  scale_weight_mu: 1.98
+  scale_weight_sigma: 0.50
+  log_interval: 50
+  eval_interval: 500
+  eval_batches: 20
+  save_interval: 1000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

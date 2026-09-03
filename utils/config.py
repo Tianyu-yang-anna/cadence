@@ -105,6 +105,16 @@ class TrainConfig:
     var_len_p: float = 0.0
     var_len_lo: int = 16
     var_len_pad_id: int = 50256     # GPT-2 eos/eot
+    # HMAR (CVPR 2025) Sec. 4.3 scale-wise loss reweighting (planner training).
+    # "token" is the registered control = one flattened CE over every ladder
+    # position, whose implicit per-scale weight is proportional to l_k (q1024
+    # takes 50% of the loss, the hardest scale q32 1.6%) — NOT uniform.
+    # "equal" = w(k)=1/K, "lognormal" = log-normal over the scale INDEX k=1..K
+    # generated from mu/sigma at run time (fitted to our own min-test-CE
+    # difficulty curve by tools/scale_difficulty.py).
+    scale_weight: str = "token"     # token | equal | lognormal
+    scale_weight_mu: float = 1.98
+    scale_weight_sigma: float = 0.50
     # periodic-eval extras: padded-window recon buckets + PQ segment probe
     eval_pad_lens: list[int] = field(default_factory=list)
     eval_segment_probe: bool = False

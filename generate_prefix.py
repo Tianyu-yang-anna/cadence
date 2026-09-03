@@ -75,7 +75,9 @@ def main():
     ap.add_argument("--chunk_count", type=int, default=0)
     ap.add_argument("--sample_mode", default="",
                     help="intra-scale sampler decode: 'pos:<scales>:<K>' | "
-                         "'seg:<scales>:<K>' | 'ar:<scales>', where <scales> "
+                         "'seg:<scales>:<K>' | 'ar:<scales>' | "
+                         "'lr:<scales>:<C>:<K>' (constrained left-to-right "
+                         "MaskGIT, C chunks x K passes), where <scales> "
                          "is a comma list of scale INDICES or 'all'")
     ap.add_argument("--max_prompt_tokens", type=int, default=0,
                     help="0 = the tokenizer window (the whole prompt fits)")
@@ -137,17 +139,22 @@ def main():
                     if args.chunk_scales else None)
     if chunk_scales is not None:
         assert args.chunk_count > 1, "--chunk_scales requires --chunk_count > 1"
-    sample_mode, sample_scales, sample_steps = "", None, 0
+    sample_mode, sample_scales, sample_steps, sample_chunks = "", None, 0, 0
     if args.sample_mode:
         parts = args.sample_mode.split(":")
         sample_mode = parts[0]
-        assert sample_mode in ("pos", "seg", "ar"), \
-            f"--sample_mode must start with pos|seg|ar, got '{args.sample_mode}'"
-        assert len(parts) == (2 if sample_mode == "ar" else 3), \
-            "--sample_mode is 'pos:<scales>:<K>' | 'seg:<scales>:<K>' | 'ar:<scales>'"
+        assert sample_mode in ("pos", "seg", "ar", "lr"), \
+            f"--sample_mode must start with pos|seg|ar|lr, got '{args.sample_mode}'"
+        assert len(parts) == {"ar": 2, "lr": 4}.get(sample_mode, 3), \
+            "--sample_mode is 'pos:<scales>:<K>' | 'seg:<scales>:<K>' | " \
+            "'ar:<scales>' | 'lr:<scales>:<C>:<K>'"
         sample_scales = (list(range(K)) if parts[1] == "all"
                          else [int(x) for x in parts[1].split(",")])
-        if sample_mode != "ar":
+        if sample_mode == "lr":
+            sample_chunks, sample_steps = int(parts[2]), int(parts[3])
+            assert sample_chunks > 0, "--sample_mode lr needs C > 0"
+            assert sample_steps > 0, "--sample_mode lr needs K > 0"
+        elif sample_mode != "ar":
             sample_steps = int(parts[2])
             assert sample_steps > 0, "--sample_mode pos/seg need K > 0"
         assert use_sampler, "--sample_mode needs a sampler-equipped checkpoint"
@@ -202,7 +209,8 @@ def main():
                                     chunk_count=args.chunk_count,
                                     sample_mode=sample_mode,
                                     sample_scales=sample_scales,
-                                    sample_steps=sample_steps)
+                                    sample_steps=sample_steps,
+                                    sample_chunks=sample_chunks)
         with ac():
             logits = tokenizer.decode_latent(f_hat.to(
                 next(tokenizer.decoder.parameters()).dtype))

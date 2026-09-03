@@ -133,8 +133,10 @@ for b in $BENCHMARKS; do
       [ -n "$RNOISE" ] && SCHED="$SCHED --refine_noise $RNOISE"
     fi
     [ -n "$CHUNKAR" ] && SCHED="$SCHED --chunk_scales ${CHUNKAR%%:*} --chunk_count ${CHUNKAR##*:}"
-    # SAMPLE_MODE='pos:<scales>:<K>' | 'seg:<scales>:<K>' | 'ar:<scales>'
-    # (intra-scale sampler decode; needs a --sampler finetuned checkpoint)
+    # SAMPLE_MODE='pos:<scales>:<K>' | 'seg:<scales>:<K>' | 'ar:<scales>' |
+    # 'lr:<scales>:<C>:<K>' (constrained left-to-right MaskGIT: C contiguous
+    # chunks committed in order, K passes inside each; C=1 is 'pos', C=l with
+    # K=1 is 'ar') — intra-scale sampler decode, needs a --sampler finetune
     [ -n "$SAMPLE_MODE" ] && SCHED="$SCHED --sample_mode $SAMPLE_MODE"
     log "generate $b ($NSHARDS shards)"
     pids=()

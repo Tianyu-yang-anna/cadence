@@ -59,6 +59,60 @@ def per_scale_seg_bits(logits: torch.Tensor, codes: torch.Tensor,
     return out
 
 
+def scale_weight_vector(mode: str, n_scales: int, mu: float,
+                        sigma: float) -> torch.Tensor | None:
+    """HMAR (CVPR 2025) Sec. 4.3 per-scale loss weights, 0 <= w(k) <= 1,
+    sum_k w(k) = 1. None means "token": no reweighting at all, i.e. the single
+    flattened CE whose implicit per-scale weight is proportional to l_k.
+
+    "lognormal" evaluates the log-normal density over the scale INDEX
+    k = 1..K (harder middle scales get more weight); the normalising constant
+    drops out, but the 1/k Jacobian does not. mu/sigma are fitted to this
+    corpus' own min-test-CE difficulty curve by tools/scale_difficulty.py."""
+    if mode == "token":
+        return None
+    if mode == "equal":
+        w = torch.ones(n_scales, dtype=torch.float64)
+    elif mode == "lognormal":
+        k = torch.arange(1, n_scales + 1, dtype=torch.float64)
+        w = torch.exp(-((k.log() - mu) ** 2) / (2.0 * sigma ** 2)) / k
+    else:
+        raise ValueError(f"unknown train.scale_weight {mode!r}")
+    return (w / w.sum()).float()
+
+
+def scale_weighted_ce(logits: torch.Tensor, codes: torch.Tensor,
+                      scales: list[int], weights: torch.Tensor) -> torch.Tensor:
+    """sum_k w(k) * MEAN CE over scale k's (positions x segments).
+
+    HMAR's formula writes the inner term as a SUM over the scale's positions,
+    which would leave the l_k token imbalance that Sec. 4.3 sets out to remove;
+    we read it as the MEAN, so w(k) IS scale k's share of the loss and the
+    objective stays on the per-segment-nat scale of the flattened CE. Every
+    scale keeps a strictly positive weight, so every parameter stays in the
+    autograd graph on every step (DDP find_unused_parameters=False)."""
+    N = logits.shape[-1]
+    total, start = None, 0
+    for i, l in enumerate(scales):
+        ce = F.cross_entropy(
+            logits[:, start:start + l].float().reshape(-1, N),
+            codes[:, start:start + l].reshape(-1))
+        term = weights[i] * ce
+        total = term if total is None else total + term
+        start += l
+    return total
+
+
+def planner_loss(logits: torch.Tensor, codes: torch.Tensor, scales: list[int],
+                 weights: torch.Tensor | None) -> torch.Tensor:
+    """Training objective. weights=None ("token") is the registered control and
+    stays the pre-reweighting expression, bit for bit."""
+    if weights is None:
+        return F.cross_entropy(logits.float().reshape(-1, logits.shape[-1]),
+                               codes.reshape(-1))
+    return scale_weighted_ce(logits, codes, scales, weights)
+
+
 def encode_prefix(tokenizer, prompt_ids, prompt_mask, ac):
     """Frozen-tokenizer quantized latent of the (padded) prompt window."""
     with torch.no_grad(), ac():
@@ -136,12 +190,23 @@ def main():
         # parallel-head training (the 2x2 ablation's segment-parallel arms)
         for p in planner.depth_projs.parameters():
             p.requires_grad_(False)
+    scale_w = scale_weight_vector(cfg.train.scale_weight, len(scales),
+                                  cfg.train.scale_weight_mu,
+                                  cfg.train.scale_weight_sigma)
+    if scale_w is not None:
+        scale_w = scale_w.to(device)
     n_params = sum(p.numel() for p in planner.parameters() if p.requires_grad)
     n_tok = sum(p.numel() for p in tokenizer.parameters())
     if is_main:
         log_line(f"prefix planner {n_params/1e6:.1f}M trainable | scales={scales} "
                  f"| S={S} N={tok_quant_cfg.codebook_size} | tokenizer={tok_ckpt} "
                  f"({n_tok/1e6:.1f}M frozen resident) | world={world}")
+        # log the realised weights once: the run records exactly what it used
+        wtxt = "implicit l_k (flattened CE)" if scale_w is None else json.dumps(
+            {f"q{l}": round(float(w), 6) for l, w in zip(scales, scale_w.tolist())})
+        log_line(f"scale_weight={cfg.train.scale_weight} "
+                 f"(mu={cfg.train.scale_weight_mu} sigma={cfg.train.scale_weight_sigma}) "
+                 f"sum={1.0 if scale_w is None else float(scale_w.sum()):.6f} w={wtxt}")
     torch.manual_seed(cfg.seed * 1000 + rank + 1)
 
     ddp = world > 1
@@ -237,9 +302,7 @@ def main():
             with sync_ctx:
                 with ac():
                     logits = model(codes, prefix_e, prefix_mask=pmask)
-                    loss = F.cross_entropy(
-                        logits.float().reshape(-1, logits.shape[-1]),
-                        codes.reshape(-1))
+                    loss = planner_loss(logits, codes, scales, scale_w)
                 (loss / n_accum).backward()
             win["loss"] += float(loss)
             win["micro"] += 1
@@ -252,6 +315,10 @@ def main():
         if is_main and step % cfg.train.log_interval == 0:
             n = max(win["micro"], 1)
             dt = time.time() - t_last
+            # per_scale_seg_bits stays UNWEIGHTED under every scale_weight arm:
+            # it is the difficulty measurement HMAR Sec. 4.3 is built on and
+            # must stay comparable across arms (only "loss"/"seg_bits"/
+            # "pos_bits" track the weighted objective being optimised)
             seg_bits = per_scale_seg_bits(last_logits, last_codes, scales)
             record = {"step": step, "lr": scheduler.get_last_lr()[0],
                       "loss": win["loss"] / n,
