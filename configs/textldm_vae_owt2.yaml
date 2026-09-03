@@ -1,0 +1,71 @@
+# TextLDM Transformer VAE (Jiang et al., arXiv:2605.07748) — stage 0 of the
+# "TextLDM architecture reproduced at our 2B budget" row.  NOT a reproduction
+# of TextLDM's results.
+#
+# BUDGET: 150000 steps x 256 windows x 1024 tokens = 39.32B tokens (11.9 epochs
+# of owt2_gpt2 train.bin).  Byte-for-byte the stage-0 allowance CADENCE's own
+# frozen tokenizer received (configs/tokenizer_owt2_1024_pqsh.yaml), so the two
+# out-of-budget disclosures are symmetric.  TextLDM's VAE saw ~160B tokens
+# (200K steps x ~800K tokens/step) -> we are at 24.6%, a 4.1x shortfall and the
+# primary caveat of this row.  This budget is DISCLOSED OUTSIDE the 2B
+# generative budget; only the DiT (stage 1) spends the 2B.
+#
+# GEOMETRY: 9L encoder + 9L decoder x 768 x 12h = 127.4M of transformer, which
+# matches TextLDM-350M's transformer budget (350M - 223M embeddings/LM head =
+# ~127M) to within 0.5%.  The total is smaller only because GPT-2's 50257-token
+# vocabulary is 3x smaller than Qwen3's.
+#
+# Loaded by utils/plain_config.py (NOT utils/config.py, whose dataclass schema
+# is owned by the tokenizer/planner stack and rejects unknown sections).
+run_name: textvae_owt2
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 1024
+  d_model: 768
+  n_heads: 12
+  ffn_mult: 4
+  dropout: 0.0
+  rope_theta: 10000.0
+  d_latent: 64            # the paper's swept optimum over 32/64/128/192
+  encoder_layers: 9
+  decoder_layers: 9
+  tie_lm_head: false      # "223M of embeddings AND LM head" implies two tables
+vae:
+  beta: 1.0e-3            # paper
+  kl_warmup_frac: 0.1     # paper says "a KL warmup schedule", shape unspecified
+  sample_posterior: true  # z = mu + sigma*eps in training, mu at inference
+  logvar_init: -6.0       # near-deterministic posterior at init (unspecified)
+repa:
+  lambda: 1.0             # paper; --set repa.lambda=0.0 is the ablation arm
+  teacher: gpt2-xl        # GPT-2 BPE == our bins -> exact per-position REPA
+  layer: -3               # 3rd-to-last hidden state (paper)
+  standardize_teacher: true   # addition: GPT-2 hidden states are anisotropic
+  calib_batches: 32       # one pre-pass for the teacher stats, batches replayed
+data:
+  bin_dir: /tmp/cadence_local/data/owt2_gpt2
+  num_workers: 4
+  limit_windows: null
+train:
+  max_steps: 150000
+  batch_size: 256         # windows per optimizer step (x1024 tok = 262144)
+  micro_batch_size: 8     # 8 GPUs -> n_accum 4; 16 -> 2; 32 -> 1
+  lr: 1.0e-4              # PAPER (AdamW 1e-4, wd 0.01), not the repo's 3e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 400
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  bf16: true
+  var_len_p: 0.5          # "input sequences are randomly truncated" (paper)
+  var_len_lo: 64
+  var_len_mode: right     # keep the first L, right-pad: a standalone segment
+  latent_ema_decay: 0.999 # horizon of the running per-channel latent stats
+  latent_calib_batches: 50  # exact fixed-model calibration at the final step
+  log_interval: 50
+  eval_interval: 1000
+  eval_batches: 10
+  eval_lens: [128, 512, 1024]
+  save_interval: 1000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}

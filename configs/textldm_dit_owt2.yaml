@@ -1,0 +1,68 @@
+# TextLDM TextDiT (stage 1): flow-matching Diffusion Transformer over the
+# FROZEN stage-0 TextLDM Transformer-VAE latent, on OpenWebText2 at the
+# controlled trunk (12L x 768 x 12h) and the 2B-gradient-token budget.
+#
+#   TextLDM, Jiang et al., arXiv:2605.07748 (no code released). This row is
+#   "TextLDM ARCHITECTURE reproduced at our 2B budget", never "we reproduced
+#   TextLDM's results".
+#
+# BUDGET: 7630 steps x 256 windows x 1024 TARGET positions = 2,000,158,720
+# gradient tokens, bit-identical to the AR / MDLM / BD3 / CADENCE /
+# CADENCE-LDM rows (asserted in train_textldm_dit.py). The 1024 clean context
+# positions are conditioning and carry no loss, exactly as the AR row's
+# prompt half does not.
+#
+# micro_batch_size 8 at the 2048-position concatenation is the value already
+# proven by configs/ldiff_owt2_pqsh.yaml at the identical geometry, and it is
+# the largest micro that keeps 256/(micro*world) integral at world 8/16/32
+# (n_accum 4/2/1). Peak is ~8 GB/GPU, so memory is not the constraint.
+#
+# Loaded by utils/plain_config.py (NOT utils/config.py, whose dataclass schema
+# has no textldm section and is owned by the tokenizer/planner stack).
+run_name: textldm_dit_owt2
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 1024            # context window == target window
+  d_model: 768
+  rope_theta: 10000.0
+  trunk: {num_layers: 12, num_heads: 12, ffn_mult: 4}
+vae:
+  # frozen stage-0 TextVAE (models/textldm_vae.py, trained by
+  # train_textldm_vae.py and DISCLOSED OUTSIDE the 2B budget, exactly like
+  # CADENCE's own frozen tokenizer). 'stub:<d>:<L>' selects the CPU smoke
+  # stand-in in models/textldm_dit.py and is never used for a real run.
+  run_dir: /tmp/cadence_local/runs/textvae_owt2
+  d_latent: 64             # paper's swept optimum (32/64/128/192); 0 = trust the ckpt
+dit:
+  cond_drop_p: 0.1         # p_uncond: context latents -> zero vectors (paper)
+  logit_normal_std: 1.5    # t = sigmoid(u), u ~ N(0, 1.5^2)  (paper, "following SD3")
+  cfg_scale_eval: 7.0      # w used by the in-training decode probe (paper: 7)
+  # context-length augmentation (NOT in the paper): benchmark prompts are
+  # 40-60% of a document, so the context half is cropped log-uniformly and
+  # left-EOT-padded, real tokens right-aligned against the continuation
+  # boundary. Without it every eval prompt is out of distribution.
+  ctx_var_len_p: 0.7
+  ctx_var_len_lo: 16
+data:
+  bin_dir: /tmp/cadence_local/data/owt2_gpt2
+  num_workers: 4
+  doc_aware: true          # drop pairs whose 2048-token span crosses a doc boundary
+  limit_windows: 0
+train:
+  max_steps: 7630
+  batch_size: 256          # windows per optimizer step (x1024 target tok)
+  micro_batch_size: 8      # seq 2048 (context 1024 + target 1024)
+  lr: 3.0e-4               # house protocol; the paper's 1e-4 is a paired control
+  min_lr_ratio: 0.1
+  warmup_steps: 400
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  bf16: true
+  log_interval: 50
+  eval_interval: 500
+  eval_batches: 20
+  save_interval: 1000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}
