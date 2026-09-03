@@ -1,6 +1,6 @@
 # CADENCE：尺度内解码顺序三实验 + baseline 扩充 —— 总结（2026-09-02/03）
 
-独立可读的汇总。逐章过程与原始数字见 `CADENCE_2B调优波报告.md` 终章五~九；
+独立可读的汇总。逐章过程与原始数字见 `CADENCE_2B调优波报告.md` 终章五~十；
 本文只给结论、证据链和可写进论文的主张。所有数字由脚本从 `results/` 的原始
 `*.metrics.json` 重建。
 
@@ -129,13 +129,27 @@ roll 打乱、保持边缘分布，看重建 token 准确率掉多少）：
 | SSD-LM T=10 | **24.2/3.2**/0.50 | 0.886 | 6.8% | 高频功能词汤 |
 | CADENCE-LDM 64 步 | 20.2/1.5/0.59 | 0.864 | 1.9% | 词沙拉 + token 复读 |
 | CMLM T=64 | 11.6/1.7/0.88 | 0.353 | 14.4% | 严重退化 |
+| TextLDM 架构复现（w=7, 50 步） | 10.6/0.2/0.42 | 0.985 | 0.1% | 高熵词碎片 |
 
 **方法论发现（对论文有独立价值）**：SSD-LM 拿到**全表最高的 ROUGE-1**（四个
 benchmark 全部第一，1BW 14.4 远超 BD3 的 9.8），而它生成的是语法破碎的功能词汤、
 MAUVE 全在 0.5 地板，且**没有抄 prompt**（bigram 复制率仅 6.8%）。高 R1 完全来自
 "the/of/and/a"这类高频词与参考文本的单元重合。
 
-结论：①这三家在 2B 下不构成有竞争力的 baseline，应作"预算下限示范"报告；
+**追加（2026-09-03）：TextLDM 架构复现给出第四种退化形态，并支撑一个路线性结论。**
+按论文架构自建（Transformer VAE 1:1 token→latent dim 64 + CE/KL/REPA，流匹配 DiT
+不注入 timestep、序列拼接条件、50 步 Euler、CFG w=7），VAE 39.3B（与我们冻结
+tokenizer 逐字节同额度）+ DiT 精确 2.0002B。结果 wiki 10.6/0.2/0.42，distinct-2
+0.985、prompt 复制率 0.1%——既不复读也不抄 prompt，而是高熵词碎片。
+关键在于我们现在有**两个隐空间来源完全不同的连续隐扩散实现**（CADENCE-LDM 借用
+我们的冻结 PQ 隐空间；TextLDM 复现自学连续 VAE 并带 REPA 蒸馏），**都退化**；
+而在**同一个冻结 PQ 隐空间上换成离散的下一尺度自回归，MAUVE 从 0.59 跳到 11.96**。
+即：退化不是某个实现的缺陷，而是**连续隐扩散在 2B 预算档上的路线性问题**。
+必须同时声明：论文的 DiT 预算是我们的约 800 倍，本结论**只对 2B 档成立，不能推论
+"TextLDM 方法不行"**；失效点已定位在扩散阶段中段的速度场拟合（mse 中段自 step
+2000 起锁死在 1.85，平凡解为 2.0），REPA 与 VAE 重建本身都正常。
+
+结论：①这四家在 2B 下不构成有竞争力的 baseline，应作"预算下限示范"报告；
 ②**可比的流畅系统只有 AR / MDLM / BD3-LM / CADENCE 四家**，主表以它们为准；
 ③**只报 ROUGE 的对比不安全**，MAUVE 正确地把三个退化家族全判到地板。
 
@@ -188,11 +202,14 @@ MAUVE 全在 0.5 地板，且**没有抄 prompt**（bigram 复制率仅 6.8%）�
 
 **checkpoint**（Volume `checkpoints/`）：`planner_prefix_owt2_pqsh_b2sp`（位置轴臂）、
 `_b2sg`（段轴臂）、`_b2sq1/_b2sq2/_b2mgd/_b2pl/_b2mg3/_b2ck/_b2nd`（此前各臂）、
-`cmlm_owt2`、`ssdlm_owt2`、`ldiff_owt2_pqsh`、`textvae_owt2_g2`（训练中）
+`cmlm_owt2`、`ssdlm_owt2`、`ldiff_owt2_pqsh`、`textvae_owt2_g2`、`textldm_dit_owt2`
 
 **结果**：`results/benchgen_*/` 全部 sel 与 test 的 JSONL + metrics.json；
 `results/diagnostics/diag_sq2.json`
 
-**在飞**：TextLDM 架构复现（commit b71357e）——Transformer VAE（1:1 token→latent、
-dim 64、CE+KL+REPA）+ 流匹配 DiT，VAE 训练中，之后 DiT 精确 2B → sel → test。
-定位是"**架构忠实、2B 预算的复现**"，不是"复现了 TextLDM 的结果"。
+**TextLDM 架构复现（已完成，commit b71357e）**：Transformer VAE `textvae_owt2_g2`
+（150k 步 = 39.3B，teacher=gpt2，repa_cos 0.931）+ 流匹配 DiT `textldm_dit_owt2`
+（精确 2.0002B）→ sel（w=7/3/1 全在 MAUVE 地板）→ test（wiki 10.61/0.23/0.42）。
+定位是"**架构忠实、2B 预算的复现**"，不是"复现了 TextLDM 的结果"（论文 DiT 预算
+是我们的约 800 倍）。半程的 gpt2-xl teacher 版 `textvae_owt2`@13400 步保留，
+可作 teacher 规模消融。详见调优波报告终章十。
