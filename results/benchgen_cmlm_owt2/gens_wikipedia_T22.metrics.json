@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/results/benchgen_cmlm_owt2/gens_wikipedia_T22.jsonl",
+  "n": 1000,
+  "rouge1": 0.1149185647214387,
+  "rouge2": 0.012736584959881551,
+  "rougeL": 0.09282065242507372,
+  "distinct1": 0.1018299902863747,
+  "distinct2": 0.22807932076064524,
+  "ref_distinct2": 0.6965737767251371,
+  "bertscore_f1": 0.7190680503845215,
+  "mauve": 0.00548224966453751
+}

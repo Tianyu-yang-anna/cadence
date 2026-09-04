@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/results/benchgen_bd3lm_owt2/gens_wikipedia_smoke.jsonl",
+  "n": 50,
+  "rouge1": 0.23767618698696155,
+  "rouge2": 0.0219827042880656,
+  "rougeL": 0.11786112013012655,
+  "distinct1": 0.46450387980848606,
+  "distinct2": 0.9055039787798409,
+  "ref_distinct2": 0.8606550614635756,
+  "bertscore_f1": 0.7837440371513367,
+  "mauve": 0.49855605140838644
+}

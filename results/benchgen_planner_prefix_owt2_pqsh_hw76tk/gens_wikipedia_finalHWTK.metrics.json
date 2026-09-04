@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_wikipedia_finalHWTK.jsonl",
+  "n": 1000,
+  "rouge1": 0.24233787574861343,
+  "rouge2": 0.02547882796940966,
+  "rougeL": 0.12487574351630328,
+  "distinct1": 0.25966883581790073,
+  "distinct2": 0.7420093729814419,
+  "ref_distinct2": 0.6965737767251371,
+  "bertscore_f1": 0.7785359621047974,
+  "mauve": 0.08190940435415024
+}

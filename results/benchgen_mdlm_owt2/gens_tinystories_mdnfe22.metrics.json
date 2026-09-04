@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/results/benchgen_mdlm_owt2/gens_tinystories_mdnfe22.jsonl",
+  "n": 1000,
+  "rouge1": 0.1692054531954696,
+  "rouge2": 0.005992353086547606,
+  "rougeL": 0.1041667885878775,
+  "distinct1": 0.2973310384951033,
+  "distinct2": 0.8220578131134668,
+  "ref_distinct2": 0.4462380099600128,
+  "bertscore_f1": 0.8018577694892883,
+  "mauve": 0.005267765340018715
+}

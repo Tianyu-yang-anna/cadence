@@ -1,8 +1,13 @@
 # CADENCE：尺度内解码顺序三实验 + baseline 扩充 —— 总结（2026-09-02/03）
 
-独立可读的汇总。逐章过程与原始数字见 `CADENCE_2B调优波报告.md` 终章五~十；
-本文只给结论、证据链和可写进论文的主张。所有数字由脚本从 `results/` 的原始
-`*.metrics.json` 重建。
+独立可读的汇总。逐章过程与原始数字见 `CADENCE_2B调优波报告.md` 终章五~十一；
+本文只给结论、证据链和可写进论文的主张。
+
+**所有原始数字都在仓库里**：`results/benchgen_*/` 下是每个臂每个 benchmark 的
+`*.metrics.json`（test 与 sel 都有）；机器生成的全量对照表见
+[MASTER_TABLES.md](MASTER_TABLES.md) + `results/master_table.csv`（44 臂 156 格，
+每格可溯源到具体文件），生成脚本 `tools/build_master_table.py`。本文引用的数字
+若与之不符，以脚本生成的为准。
 
 ---
 

@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/results/benchgen_ldiff_owt2_pqsh/gens_tinystories_D64.jsonl",
+  "n": 1000,
+  "rouge1": 0.191117208429173,
+  "rouge2": 0.004912496204538861,
+  "rougeL": 0.11930715191365304,
+  "distinct1": 0.12374282044446598,
+  "distinct2": 0.6173858646321418,
+  "ref_distinct2": 0.4462380099600128,
+  "bertscore_f1": 0.7821164727210999,
+  "mauve": 0.004242616993867721
+}

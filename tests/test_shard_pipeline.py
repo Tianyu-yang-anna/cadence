@@ -182,7 +182,8 @@ def run_prepare(monkeypatch, tmp_path, docs, extra_args):
 
     monkeypatch.setattr(transformers, "AutoTokenizer", FakeAuto)
     monkeypatch.setattr(prepare_owt, "doc_stream",
-                        lambda source, data_files_range="":
+                        lambda source, data_files_range="", materialize=False,
+                        doc_range="":
                         ("fake", iter({"text": t} for t in docs)))
     out = tmp_path / "out"
     monkeypatch.setattr(sys, "argv", ["prepare_owt.py", "--out", str(out),

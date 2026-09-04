@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/results/benchgen_textldm_dit_owt2/gens_sel_wikisource_selw3s50.jsonl",
+  "n": 250,
+  "rouge1": 0.14145832535662864,
+  "rouge2": 0.0031950030531237863,
+  "rougeL": 0.09438880467949415,
+  "distinct1": 0.41977871267861444,
+  "distinct2": 0.8983558940175396,
+  "ref_distinct2": 0.6964641480626361,
+  "bertscore_f1": 0.7257219552993774,
+  "mauve": 0.005341274669388664
+}

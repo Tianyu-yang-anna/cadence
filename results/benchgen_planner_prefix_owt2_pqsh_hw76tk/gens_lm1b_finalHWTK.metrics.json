@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_lm1b_finalHWTK.jsonl",
+  "n": 1000,
+  "rouge1": 0.08850816676930043,
+  "rouge2": 0.003151573757586179,
+  "rougeL": 0.07499452279862077,
+  "distinct1": 0.4241247497117893,
+  "distinct2": 0.8779148633809185,
+  "ref_distinct2": 0.824236160454751,
+  "bertscore_f1": 0.8140779733657837,
+  "mauve": 0.0055478888901515375
+}

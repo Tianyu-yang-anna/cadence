@@ -490,6 +490,11 @@ NFE = 每生成 1024 token 的 backbone 前向次数（CFG 双分支计入）。
 
 # 总表：CADENCE 全部尝试 × 全部 baseline（test 4×1000，R1/R2/MAUVE ×100）
 
+> **机器生成的权威版本在 [MASTER_TABLES.md](MASTER_TABLES.md)**（`tools/build_master_table.py`
+> 从 `results/benchgen_*/` 的原始 `*.metrics.json` 重建，附 `results/master_table.csv`
+> 平表，44 个臂 156 格，每格带 run_dir/TAG/文件路径可溯源）。下面这份是人读版摘要，
+> 若两者有出入，**以脚本生成的那份为准**。
+
 除标注外全部严格 2B（7630×256×1024 梯度 token）、同数据同 tokenizer 同 12L×768
 主干；NFE = 每生成 1024 token 的 backbone 前向次数（CFG 双分支计入）。
 所有数字由脚本从 results/ 的原始 metrics.json 重建，非手抄。

@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_sel_wikisource_hwln.jsonl",
+  "n": 250,
+  "rouge1": 0.28659337289711734,
+  "rouge2": 0.033105316628190544,
+  "rougeL": 0.14358385761511316,
+  "distinct1": 0.29019404340493354,
+  "distinct2": 0.7272422589234178,
+  "ref_distinct2": 0.6964641480626361,
+  "bertscore_f1": 0.7826117277145386,
+  "mauve": 0.17515044640412158
+}

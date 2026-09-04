@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_sel_tinystories_p5cold3.jsonl",
+  "n": 250,
+  "rouge1": 0.26050025106052865,
+  "rouge2": 0.018519319752994978,
+  "rougeL": 0.13931653887137582,
+  "distinct1": 0.23325008144206755,
+  "distinct2": 0.7387222851298535,
+  "ref_distinct2": 0.5451656499981736,
+  "bertscore_f1": 0.8055797815322876,
+  "mauve": 0.006333538840418094
+}

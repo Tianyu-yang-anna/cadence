@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_sel_wikipedia_p5hot3r4.jsonl",
+  "n": 250,
+  "rouge1": 0.2364817548844161,
+  "rouge2": 0.024588930475107216,
+  "rougeL": 0.12238201413849055,
+  "distinct1": 0.3344912661600711,
+  "distinct2": 0.8093027868689874,
+  "ref_distinct2": 0.7602697609838341,
+  "bertscore_f1": 0.7810620069503784,
+  "mauve": 0.05804818196488181
+}

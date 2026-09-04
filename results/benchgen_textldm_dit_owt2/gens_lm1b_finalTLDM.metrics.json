@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/results/benchgen_textldm_dit_owt2/gens_lm1b_finalTLDM.jsonl",
+  "n": 1000,
+  "rouge1": 0.061773823902682906,
+  "rouge2": 0.00021249730661495364,
+  "rougeL": 0.05787210646019936,
+  "distinct1": 0.49869546750803956,
+  "distinct2": 0.9382468832762741,
+  "ref_distinct2": 0.824236160454751,
+  "bertscore_f1": 0.7848562002182007,
+  "mauve": 0.004535258412585336
+}

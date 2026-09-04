@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/results/benchgen_textldm_dit_owt2/gens_wikipedia_finalTLDM.jsonl",
+  "n": 1000,
+  "rouge1": 0.10613860036327005,
+  "rouge2": 0.0022883890476676164,
+  "rougeL": 0.07628125747250626,
+  "distinct1": 0.36272939286480366,
+  "distinct2": 0.8494665560196414,
+  "ref_distinct2": 0.6965737767251371,
+  "bertscore_f1": 0.7215867042541504,
+  "mauve": 0.004248161397705615
+}

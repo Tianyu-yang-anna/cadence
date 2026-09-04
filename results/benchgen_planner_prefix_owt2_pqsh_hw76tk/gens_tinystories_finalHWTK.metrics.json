@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_tinystories_finalHWTK.jsonl",
+  "n": 1000,
+  "rouge1": 0.2672973819659658,
+  "rouge2": 0.02126739485960698,
+  "rougeL": 0.14672958547785422,
+  "distinct1": 0.1828635823861571,
+  "distinct2": 0.662868287417511,
+  "ref_distinct2": 0.4462380099600128,
+  "bertscore_f1": 0.8133772611618042,
+  "mauve": 0.0057324314778042125
+}

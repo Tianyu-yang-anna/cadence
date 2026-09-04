@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/results/benchgen_ldiff_owt2_pqsh/gens_wikisource_D64.jsonl",
+  "n": 1000,
+  "rouge1": 0.2316839885333871,
+  "rouge2": 0.015548216515949908,
+  "rougeL": 0.13263683796475784,
+  "distinct1": 0.09977272274168145,
+  "distinct2": 0.5303051553827967,
+  "ref_distinct2": 0.6081017451762207,
+  "bertscore_f1": 0.7522807121276855,
+  "mauve": 0.004691257507847595
+}

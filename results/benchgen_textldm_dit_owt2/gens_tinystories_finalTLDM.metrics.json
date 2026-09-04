@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/results/benchgen_textldm_dit_owt2/gens_tinystories_finalTLDM.jsonl",
+  "n": 1000,
+  "rouge1": 0.11347679614947136,
+  "rouge2": 0.001161575760671104,
+  "rougeL": 0.08447307745023477,
+  "distinct1": 0.4382497637108305,
+  "distinct2": 0.9265142408556779,
+  "ref_distinct2": 0.4462380099600128,
+  "bertscore_f1": 0.7548617720603943,
+  "mauve": 0.004123781059685501
+}

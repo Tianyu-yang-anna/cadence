@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_sel_wikipedia_slr2lr.jsonl",
+  "n": 250,
+  "rouge1": 0.21934220822184877,
+  "rouge2": 0.0205836959262034,
+  "rougeL": 0.11683780474369637,
+  "distinct1": 0.3485048850291128,
+  "distinct2": 0.8139442626202519,
+  "ref_distinct2": 0.7602697609838341,
+  "bertscore_f1": 0.7767040729522705,
+  "mauve": 0.11794299777189053
+}
