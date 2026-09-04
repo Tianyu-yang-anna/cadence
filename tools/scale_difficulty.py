@@ -1,7 +1,7 @@
 """Per-scale difficulty curve + log-normal weight fit (HMAR CVPR 2025 Sec. 4.3).
 
-HMAR measures per-scale learning difficulty as the MINIMUM test cross-entropy
-reached at each scale over training (their Fig. 12), observes an approximately
+HMAR measures per-scale learning difficulty as the MINIMUM cross-entropy reached
+at each scale over training (their Fig. 12), observes an approximately
 log-normal hump over the scale index, and trains with
 L = sum_k w(k) * L(r_k), 0 <= w(k) <= 1, sum_k w(k) = 1 — harder scales get
 more weight. This reads a run's eval.jsonl (records with per_scale_seg_bits),
@@ -9,6 +9,16 @@ takes the min per scale over every eval point, fits a log-normal over the scale
 INDEX k = 1..K by least squares against the BASELINE-SUBTRACTED difficulty
 (d_k = minCE_k - min_j minCE_j; the easiest scale carries no extra weight), and
 writes the fitted mu/sigma plus the normalised weights.
+
+DELIBERATE DEVIATION FROM HMAR's WORDING. HMAR says "test" cross-entropy;
+train_prefix_planner.py writes eval.jsonl from the VALIDATION split
+(`bin_dir / "val.bin"`, see its val_loader), and that is what this reads. Using
+the real test split to choose a loss weighting would be exactly the test-set
+leakage our pre-registration protocol forbids — the test benchmarks are fired
+once per configuration and never used for design. So the design quantity here
+is min-VAL CE. `--field`/`--eval_jsonl` let you point at a genuine test-split
+curve if you only want to REPORT the literal HMAR quantity, but do not feed a
+test-split fit back into training.
 
 The amplitude is closed-form for a fixed (mu, sigma), so the search is a plain
 2-D grid over (mu, sigma) refined once — no scipy on the training image.

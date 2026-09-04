@@ -62,9 +62,39 @@ REVEALS = (0.25, 0.50, 0.75)          # metric B reveal ratios
 ROLL_FRACS = (0.05, 0.10, 0.20, 0.40)  # metric C rolled-position fractions
 COUPLING_SCALES = (8, 9)               # + the finest scale, always
 
+# metric D: the position-vs-segment coupling contrast at MATCHED perturbation
+# mass. Metric C above rolls positions and utils/evaluation.py's segment probe
+# rolls segments, but the two were never mass-matched -- the published contrast
+# put a 100%-of-slots independent-donor segment scramble (all_independent)
+# against a 20%-of-slots shared-donor position roll, a 5x footprint gap that
+# accounts for the reported "order of magnitude". Segment counts quantise the
+# footprint to multiples of 1/S, so the grid is those multiples and the
+# position rolls are matched to exactly the same slot fractions.
+SLOT_FRACS = (0.25, 0.50, 0.75, 1.0)
+# donor structure is the second confound: all_independent gives each segment a
+# DIFFERENT donor (destroying the within-position joint) while the position
+# roll gives every rolled position the SAME donor (leaving their mutual
+# structure intact). Both axes are run both ways here.
+MATCHED_VARIANTS = ("pos_shared", "pos_indep", "seg_shared", "seg_indep")
+
 
 def _acc(bucket: dict) -> float:
     return bucket["correct"] / max(bucket["total"], 1)
+
+
+def _roll_indep(x: torch.Tensor, shifts: torch.Tensor) -> torch.Tensor:
+    """Roll along the batch axis with a PER-COLUMN shift.
+
+    x is [B, n, ...]; shifts is [n]. Column j is rolled by shifts[j], so each
+    column draws from a different donor sample. torch.roll cannot express this
+    (one shift for the whole slice), which is exactly the structural asymmetry
+    between the two published probes.
+    """
+    B, n = x.shape[0], x.shape[1]
+    idx = (torch.arange(B, device=x.device)[:, None] + shifts[None, :]) % B
+    while idx.ndim < x.ndim:
+        idx = idx[..., None]
+    return torch.gather(x, 0, idx.expand_as(x))
 
 
 def main():
@@ -151,6 +181,9 @@ def main():
     coup_base = {"correct": 0, "total": 0}
     coupling = {(k, p): {"correct": 0, "total": 0}
                 for k in probe_scales for p in ROLL_FRACS}
+    matched = {(k, f, v): {"correct": 0, "total": 0}
+               for k in probe_scales for f in SLOT_FRACS
+               for v in MATCHED_VARIANTS}
 
     gen = torch.Generator(device=device).manual_seed(args.seed)
     n_pairs, n_batches = 0, 0
@@ -231,6 +264,46 @@ def main():
                         coupling[(k, p)]["correct"] += c
                         coupling[(k, p)]["total"] += t
 
+                # D: the same two axes at MATCHED slot count, each with both
+                # donor structures. Same batch, same decoder, same accuracy
+                # estimator as C, so the four variants differ only in WHICH
+                # slots move and whether they move together.
+                for k in probe_scales:
+                    l = scales[k]
+                    for frac in SLOT_FRACS:
+                        n_pos = max(1, int(round(frac * l)))
+                        n_seg = max(1, int(round(frac * S)))
+                        sel = torch.rand(l, device=device,
+                                         generator=gen).argsort()[:n_pos]
+                        segs = torch.rand(S, device=device,
+                                          generator=gen).argsort()[:n_seg]
+                        for variant in MATCHED_VARIANTS:
+                            r = [c_.clone() if j == k else c_
+                                 for j, c_ in enumerate(code_list)]
+                            if variant == "pos_shared":
+                                r[k][:, sel] = torch.roll(r[k][:, sel], 1, dims=0)
+                            elif variant == "pos_indep":
+                                # shift 1..B-1 so no column keeps its own sample
+                                sh = 1 + (torch.arange(n_pos, device=device)
+                                          % max(B - 1, 1))
+                                r[k][:, sel] = _roll_indep(r[k][:, sel], sh)
+                            elif variant == "seg_shared":
+                                blk = r[k][:, :, segs]
+                                r[k][:, :, segs] = torch.roll(blk, 1, dims=0)
+                            else:  # seg_indep == utils/evaluation.py's
+                                   # all_independent when n_seg == S
+                                blk = r[k][:, :, segs].permute(0, 2, 1)
+                                sh = 1 + (torch.arange(n_seg, device=device)
+                                          % max(B - 1, 1))
+                                r[k][:, :, segs] = _roll_indep(
+                                    blk, sh).permute(0, 2, 1)
+                            with ac():
+                                lg = tokenizer.decode_latent(
+                                    tokenizer.msrvq.dequantize(r, seq_len))
+                            c, t = token_accuracy(lg, tgt)
+                            matched[(k, frac, variant)]["correct"] += c
+                            matched[(k, frac, variant)]["total"] += t
+
             n_pairs += B
             n_batches += 1
             log_line(f"batch {bi + 1}/{args.n_batches} done")
@@ -257,6 +330,18 @@ def main():
                  "acc": _acc(coupling[(k, p)]),
                  "acc_drop": base_acc - _acc(coupling[(k, p)])}
                 for k in probe_scales for p in ROLL_FRACS]},
+        "matched_coupling": {
+            "base_acc": base_acc, "n_tokens": coup_base["total"],
+            "note": "position vs segment at equal slot count; *_indep gives "
+                    "each rolled column its own donor, *_shared one donor for "
+                    "all. seg_indep at slot_frac=1.0 is utils/evaluation.py's "
+                    "all_independent.",
+            "rows": [
+                {"scale_index": k, "l": scales[k], "slot_frac": f,
+                 "variant": v, "acc": _acc(matched[(k, f, v)]),
+                 "acc_drop": base_acc - _acc(matched[(k, f, v)])}
+                for k in probe_scales for f in SLOT_FRACS
+                for v in MATCHED_VARIANTS]},
     }
 
     print(f"\n== A/B  planner code accuracy | {n_pairs} val pairs | "
@@ -283,6 +368,17 @@ def main():
         print(f"{k:>3} {scales[k]:>6} " + " ".join(
             f"{_acc(coupling[(k, p)]):>8.4f}"
             f"{base_acc - _acc(coupling[(k, p)]):>+8.4f}" for p in ROLL_FRACS))
+
+    print(f"\n== D  position vs segment at MATCHED slot count | acc_drop pp "
+          f"| base={base_acc:.4f} ==")
+    print(f"{'k':>3} {'l':>6} {'slots':>7} "
+          + " ".join(f"{v:>11}" for v in MATCHED_VARIANTS))
+    for k in probe_scales:
+        for f in SLOT_FRACS:
+            drops = [(base_acc - _acc(matched[(k, f, v)])) * 100
+                     for v in MATCHED_VARIANTS]
+            print(f"{k:>3} {scales[k]:>6} {int(f * 100):>6}% "
+                  + " ".join(f"{d:>11.3f}" for d in drops))
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

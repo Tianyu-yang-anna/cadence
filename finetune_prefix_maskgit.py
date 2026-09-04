@@ -70,7 +70,7 @@ def main():
     ap.add_argument("--mask_mode", default="bernoulli",
                     choices=["bernoulli", "chunk_prefix", "none",
                              "sampler_pos", "sampler_seg", "sampler_causal",
-                             "sampler_mix"],
+                             "sampler_lr", "sampler_mix"],
                     help="bernoulli=MaskGIT random reveal; chunk_prefix=reveal "
                          "the first m of --chunks contiguous chunks (chunk-AR "
                          "training); none=plain CE continuation (no reveal); "
@@ -79,8 +79,16 @@ def main():
                          "every position of every scale, causal=strict "
                          "left-to-right, mix=50/50 pos/causal)")
     ap.add_argument("--chunks", type=int, default=16,
-                    help="chunk grid for chunk_prefix (inference chunk counts "
-                         "that divide this grid stay train-consistent)")
+                    help="chunk grid for chunk_prefix and sampler_lr "
+                         "(inference chunk counts that divide this grid stay "
+                         "train-consistent)")
+    ap.add_argument("--lr_supervise", default="chunk",
+                    choices=["chunk", "all"],
+                    help="sampler_lr loss scope: chunk=only the current "
+                         "chunk's masked positions (what the lr decode reads "
+                         "out); all=every masked position (sampler_pos-style, "
+                         "more signal but trains a conditional inference "
+                         "never performs)")
     ap.add_argument("--resume", default="auto")
     args = ap.parse_args()
 
@@ -113,8 +121,14 @@ def main():
     S = tokenizer.msrvq.pq_segments
     assert S > 0
 
+    # sampler_lr shares the "position" readout with sampler_pos -- what differs
+    # is only the reveal pattern it is trained on (see the mask loop): the lr
+    # decode with C < l runs the sampler in non-causal position mode over a
+    # stream whose left chunks are fully committed, a state sampler_pos's
+    # uniformly-random reveals essentially never produce.
     sampler_mode = {"sampler_pos": "position", "sampler_seg": "segment",
-                    "sampler_causal": "causal"}.get(args.mask_mode, "position")
+                    "sampler_causal": "causal",
+                    "sampler_lr": "position"}.get(args.mask_mode, "position")
     sampler_arm = args.mask_mode.startswith("sampler_")
     use_sampler = args.sampler or cfg.planner.sampler
     assert use_sampler or not sampler_arm, \
@@ -266,6 +280,39 @@ def main():
                         # positions are supervised in one teacher-forced pass
                         smask[:, a:a + l] = True
                         w[:] = 1.0
+                    elif arm == "sampler_lr":
+                        # what the lr decode actually visits: chunks left of
+                        # the current one fully committed, a cosine-random
+                        # subset revealed inside it, everything right of it
+                        # still masked.
+                        #
+                        # --lr_supervise picks WHICH masked positions carry
+                        # loss, and the two options are not equivalent:
+                        #   chunk -> only the current chunk's masked positions.
+                        #     _sampler_lr_scale reads out st_c[:, sl], i.e. the
+                        #     current chunk ONLY, so this is exactly the
+                        #     conditional inference asks for.
+                        #   all   -> every masked position, as sampler_pos
+                        #     does. Same input states, but it also trains
+                        #     "predict chunk c+5 with chunk c still open",
+                        #     which the decode never performs.
+                        C = min(args.chunks, l)
+                        base_len, rem = divmod(l, C)
+                        edge = torch.tensor(
+                            [m * base_len + min(m, rem) for m in range(C + 1)],
+                            device=device)
+                        c = torch.randint(0, C, (B, 1), device=device)
+                        idx = torch.arange(l, device=device).unsqueeze(0)
+                        committed = idx < edge[c]                # chunks < c
+                        current = (idx >= edge[c]) & (idx < edge[c + 1])
+                        r = torch.cos(math.pi / 2 * torch.rand(B, 1, device=device))
+                        inner = torch.rand(B, l, device=device) >= r
+                        revealed = committed | (current & inner)
+                        smask[:, a:a + l] = revealed
+                        w[:] = 0.0
+                        sup = (~revealed if args.lr_supervise == "all"
+                               else (current & ~inner))
+                        w[sup] = 1.0
                     else:
                         r = torch.cos(math.pi / 2 * torch.rand(B, 1, device=device))
                         masked = torch.rand(B, l, device=device) < r
