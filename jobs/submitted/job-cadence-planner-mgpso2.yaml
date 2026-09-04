@@ -1,0 +1,24 @@
+experiment_name: cadence-planner-mgpso2
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 32
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  RUN_NAME: "mgpso2"
+  FULL_NAME: "planner_prefix_owt2_pqps_mg"
+  SRC_FULL: "planner_prefix_owt2_pqps"
+  TOK_FULL_NAME: "vqvae_owt2_1024_pqps"
+  CONFIG: "configs/planner_prefix_owt2_pqps.yaml"
+  DATA_NAME: "owt2_gpt2"
+  CODES_NAME: "codes_owt2_1024_pqps"
+  TRAIN_SCRIPT: "finetune_prefix_maskgit.py"
+  EXTRA_ARGS: "--src_run planner_prefix_owt2_pqps --steps 5000 --set train.lr=5e-5 --set train.warmup_steps=100"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/planner_entry.sh

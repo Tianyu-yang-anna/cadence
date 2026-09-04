@@ -1,0 +1,23 @@
+experiment_name: cadence-bd3gen-genbd3s
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 300
+env_variables:
+  RUN_NAME: "genbd3s"
+  FULL_NAME: "bd3lm_owt2"
+  ALGO: "bd3lm"
+  ATTN_BACKEND: "sdpa"
+  DATA_NAME: "owt2_gpt2"
+  BENCHMARKS: "wikipedia"
+  N: "50"
+  TAG: "_smoke"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/bd3gen_entry.sh

@@ -70,6 +70,14 @@ ROWS = [
      "benchgen_planner_prefix_owt2_pqsh_b2sp", "_finalAR", 22, 0,
      "单尺度 ar:8；sampler_causal 恰是 b2sp 训练的一半，故为匹配较好的一行"),
 
+    # ---- the 2D-maskgit wave (2026-09-04 evening) ------------------------
+    ("axis", "2D 赢家 lrseg C=8,K=1（b2s2d，_final2D）",
+     "benchgen_planner_prefix_owt2_pqsh_b2s2d", "_final2D", 22, 48,
+     "depth 冻结；两 sel 集对 chunk 超参排序反相关，此格是主判据下的名义赢家"),
+    ("axis", "纯段轴@细尺度锚 lrseg C=1,K=4（b2s2d，_finalS24）",
+     "benchgen_planner_prefix_owt2_pqsh_b2s2d", "_finalS24", 22, 24,
+     "= seg:8,9,10:4 的同臂退化（逐比特等价有门禁测试）；24 采样器前向的注册数"),
+
     # ---- P1 HMAR scale reweighting --------------------------------------
     ("hmar", "波A token（hw76tk，单跑基座）",
      "benchgen_planner_prefix_owt2_pqsh_hw76tk", "_finalHWTK", 22, 0,
@@ -125,6 +133,26 @@ GROUP_TITLE = {
 # They are reported separately from test because n=250 MAUVE has a measured
 # bootstrap sd of 3.2-5.3 -- see the caveat printed under each sweep.
 SEL_SWEEPS = [
+    ("2D MaskGIT 扫描（`b2s2d`，lrseg:8,9,10:C:K，仅细尺度）",
+     "benchgen_planner_prefix_owt2_pqsh_b2s2d",
+     [("C=2 K=4（48，mentor 组1：段原样/位置粗）", "_2dc2k4"),
+      ("C=8 K=1（48，组2：位置原粒度/段粗）", "_2dc8k1"),
+      ("C=4 K=2（48，组3：双粗化）", "_2dc4k2"),
+      ("C=2 K=2（24）", "_2dc2k2"),
+      ("C=4 K=1（24）", "_2dc4k1"),
+      ("锚 C=1 K=4 = 纯段轴（24）", "_2dc1k4")],
+     "同 NFE 档内 2D 不优于纯段轴锚（两 sel 集对 C×K 排序反相关）；且所有"
+     "细尺度-only 配置都远低于全覆盖 seg:all:4 的 22.89 —— 见下面的覆盖曲线。"),
+    ("采样器尺度覆盖曲线（`b2sg` 同 checkpoint，seg K=4，只改尺度集）",
+     "benchgen_planner_prefix_owt2_pqsh_b2sg",
+     [("{8,9,10} 细尺度-only（24）", "_segfine"),
+      ("{0..7} 粗尺度-only（64）", "_sgcoarse"),
+      ("{0..9} 全部除 q1024（80）", "_sgno1024"),
+      ("{0..10} 全尺度（88，主线）", "_sgseg"),
+      ("无采样器（0）", "_sgplain")],
+     "**没有任何真子集接近全覆盖**：最好的 {0..9}@80 只到 15.62，而全覆盖@88 "
+     "= 22.89；补上 q1024 那最后 8 次前向带来最大单跳 +7.3。为压 NFE 而砍尺度"
+     "覆盖是亏本买卖 —— 这是 2D 扫描教给我们的真正结论。"),
     ("段轴 K 曲线（`b2sg`，唯一变量 = 每尺度承诺轮数）",
      "benchgen_planner_prefix_owt2_pqsh_b2sg",
      [("段并行（K=1 等价，走 plain 读出）", "_sgplain"),

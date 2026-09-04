@@ -1,0 +1,18 @@
+experiment_name: cadence-nsp-bertB
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 1
+  gpu_type: GPU_1xH100
+max_retries: 0
+timeout_minutes: 180
+env_variables:
+  RUN_NAME: "bertB"
+  CONFIG: "configs/vqvae_wikitext_bert.yaml"
+  DATA_NAME: "wikitext103_bert"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/nsp_entry.sh

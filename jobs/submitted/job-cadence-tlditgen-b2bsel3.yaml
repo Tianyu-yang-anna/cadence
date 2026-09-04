@@ -1,0 +1,23 @@
+experiment_name: cadence-tlditgen-b2bsel3
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 180
+env_variables:
+  RUN_NAME: "b2bsel3"
+  FULL_NAME: "textldm_dit_owt2"
+  VAE_FULL: "textvae_owt2_g2"
+  BENCHMARKS: "sel_wikipedia sel_wikisource"
+  STEPS: "50"
+  CFG_W: "3.0"
+  N: "250"
+  TAG: "_selw3s50"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/tlditgen_entry.sh

@@ -1,0 +1,22 @@
+experiment_name: cadence-ldiff-sh1
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  RUN_NAME: "sh1"
+  FULL_NAME: "ldiff_owt2_pqsh"
+  CONFIG: "configs/ldiff_owt2_pqsh.yaml"
+  CODES_NAME: "codes_owt2_1024_pqsh"
+  TOK_FULL_NAME: "vqvae_owt2_1024_pqsh"
+  DATA_NAME: "owt2_gpt2"
+  EXTRA_ARGS: "--objective v --ema 0.9999"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/ldiff_entry.sh

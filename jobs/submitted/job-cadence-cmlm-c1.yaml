@@ -1,0 +1,20 @@
+experiment_name: cadence-cmlm-c1
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 32
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  RUN_NAME: "c1"
+  FULL_NAME: "cmlm_owt2"
+  CONFIG: "configs/cmlm_owt2.yaml"
+  DATA_NAME: "owt2_gpt2"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/cmlm_entry.sh

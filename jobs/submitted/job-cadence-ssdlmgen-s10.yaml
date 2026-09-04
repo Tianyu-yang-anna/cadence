@@ -1,0 +1,20 @@
+experiment_name: cadence-ssdlmgen-s10
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  RUN_NAME: "s10"
+  FULL_NAME: "ssdlm_owt2"
+  CONFIG: "configs/ssdlm_owt2.yaml"
+  T_STEPS: "10"
+  TAG: "_S10"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/ssdlmgen_entry.sh

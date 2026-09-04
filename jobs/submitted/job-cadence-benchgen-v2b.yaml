@@ -1,0 +1,18 @@
+experiment_name: cadence-benchgen-v2b
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 300
+env_variables:
+  PLANNER_FULL: "planner_owt_v2"
+  TOK_FULL: "vqvae_owt_gpt2hybrid_dd"
+  TAG: "_v2b"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/benchgen_entry.sh

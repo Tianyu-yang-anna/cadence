@@ -1,0 +1,20 @@
+experiment_name: cadence-geneval-es12k
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 1
+  gpu_type: GPU_1xH100
+max_retries: 0
+timeout_minutes: 180
+env_variables:
+  AR_RUN: "es12k"
+  SKIP_ORACLE: "1"
+  SKIP_TEST: "1"
+  TAG: "_es12k"
+  CFGS: ""
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/geneval_entry.sh

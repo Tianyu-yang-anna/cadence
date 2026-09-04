@@ -1,0 +1,22 @@
+experiment_name: cadence-planner-owt1024
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 32
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 600
+env_variables:
+  RUN_NAME: "owt1024"
+  FULL_NAME: "planner_owt1024"
+  TOK_FULL_NAME: "vqvae_owt9_1024_d5"
+  CONFIG: "configs/planner_owt1024.yaml"
+  DATA_NAME: "owt9_gpt2"
+  TOKENIZER: "gpt2"
+  CODES_NAME: "codes_owt9_1024"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/planner_entry.sh

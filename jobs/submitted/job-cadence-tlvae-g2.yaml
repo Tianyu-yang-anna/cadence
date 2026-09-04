@@ -1,0 +1,18 @@
+experiment_name: cadence-tlvae-g2
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 32
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  RUN_NAME: "g2"
+  FULL_NAME: "textvae_owt2_g2"
+  EXTRA_ARGS: "--set repa.teacher=gpt2"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/tlvae_entry.sh

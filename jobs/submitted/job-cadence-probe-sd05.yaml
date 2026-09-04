@@ -1,0 +1,17 @@
+experiment_name: cadence-probe-sd05
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 1
+  gpu_type: GPU_1xH100
+max_retries: 0
+timeout_minutes: 120
+env_variables:
+  RUN_NAME: "sd05"
+  CONFIG: "configs/vqvae_wikitext.yaml"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/probe_entry.sh

@@ -1,0 +1,19 @@
+experiment_name: cadence-arplan-base
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  RUN_NAME: "base"
+  DATA_NAME: "wikitext103_bert"
+  TOKENIZER: "bert-base-uncased"
+  CODES_NAME: "codes_hybrid"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/arplan_entry.sh

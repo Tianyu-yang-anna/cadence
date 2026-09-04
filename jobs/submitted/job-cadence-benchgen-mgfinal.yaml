@@ -1,0 +1,22 @@
+experiment_name: cadence-benchgen-mgfinal
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 300
+env_variables:
+  PLANNER_FULL: "planner_owt1024_mg"
+  TOK_FULL: "vqvae_owt9_1024_d5"
+  CONFIG: "configs/planner_owt1024.yaml"
+  DATA_NAME: "owt9_gpt2"
+  SCHED_PRESET: "s5"
+  REFINE: "9,10:2"
+  TAG: "_mgfinal"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/benchgen_entry.sh

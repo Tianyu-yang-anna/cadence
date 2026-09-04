@@ -1,0 +1,24 @@
+experiment_name: cadence-planner-hw76eq
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 32
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  RUN_NAME: "hw76eq"
+  FULL_NAME: "planner_prefix_owt2_pqsh_hw76eq"
+  TOK_FULL_NAME: "vqvae_owt2_1024_pqsh"
+  CONFIG: "configs/planner_prefix_owt2_pqsh.yaml"
+  DATA_NAME: "owt2_gpt2"
+  CODES_NAME: "codes_owt2_1024_pqsh"
+  TRAIN_SCRIPT: "train_prefix_planner.py"
+  EXTRA_ARGS: "--set train.scale_weight=equal"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/planner_entry.sh

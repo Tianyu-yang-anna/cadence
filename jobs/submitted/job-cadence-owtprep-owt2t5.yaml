@@ -1,0 +1,21 @@
+experiment_name: cadence-owtprep-owt2t5
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  MAX_TOKENS: "17e9"
+  DATA_OUT: "owt2_t5"
+  SOURCE: "Geralt-Targaryen/openwebtext2"
+  MATERIALIZE: "1"
+  TOKENIZER: "t5-small"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/owtprep_entry.sh

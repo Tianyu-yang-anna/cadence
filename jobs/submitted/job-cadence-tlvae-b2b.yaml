@@ -1,0 +1,17 @@
+experiment_name: cadence-tlvae-b2b
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 32
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  RUN_NAME: "b2b"
+  FULL_NAME: "textvae_owt2"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/tlvae_entry.sh

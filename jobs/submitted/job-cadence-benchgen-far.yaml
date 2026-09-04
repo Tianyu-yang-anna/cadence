@@ -1,0 +1,23 @@
+experiment_name: cadence-benchgen-far
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 600
+env_variables:
+  PLANNER_FULL: "planner_prefix_owt2_pqsh_b2sp"
+  TOK_FULL: "vqvae_owt2_1024_pqsh"
+  CONFIG: "configs/planner_prefix_owt2_pqsh.yaml"
+  DATA_NAME: "owt2_gpt2"
+  GEN_SCRIPT: "generate_prefix.py"
+  SCHED_PRESET: "p5hot7"
+  SAMPLE_MODE: "ar:8"
+  TAG: "_finalAR"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/benchgen_entry.sh

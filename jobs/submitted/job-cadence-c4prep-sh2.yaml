@@ -1,0 +1,19 @@
+experiment_name: cadence-c4prep-sh2
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 300
+env_variables:
+  SHARD: "2"
+  NSHARDS: "8"
+  DATA_OUT: "c4_gpt2"
+  TOKENS_PER_SHARD: "5e9"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/c4prep_entry.sh

@@ -1,0 +1,22 @@
+experiment_name: cadence-geneval-t08
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 1
+  gpu_type: GPU_1xH100
+max_retries: 0
+timeout_minutes: 180
+env_variables:
+  AR_RUN: ""
+  SKIP_ORACLE: "1"
+  SKIP_TEST: "1"
+  TAG: "_t08"
+  TEMP: "0.8"
+  TOPP: "0.9"
+  CFGS: "3.0 5.0 7.0"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/geneval_entry.sh

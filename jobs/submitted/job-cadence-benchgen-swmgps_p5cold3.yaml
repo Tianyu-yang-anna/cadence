@@ -1,0 +1,23 @@
+experiment_name: cadence-benchgen-swmgps_p5cold3
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  PLANNER_FULL: "planner_prefix_owt2_pqps_mg"
+  TOK_FULL: "vqvae_owt2_1024_pqps"
+  CONFIG: "configs/planner_prefix_owt2_pqps.yaml"
+  DATA_NAME: "owt2_gpt2"
+  GEN_SCRIPT: "generate_prefix.py"
+  SCHED_PRESET: "p5cold3"
+  BENCHMARKS: "sel_wikipedia sel_wikisource sel_tinystories sel_lm1b"
+  TAG: "_p5cold3"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/benchgen_entry.sh

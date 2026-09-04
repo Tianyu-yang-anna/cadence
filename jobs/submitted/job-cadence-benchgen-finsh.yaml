@@ -1,0 +1,23 @@
+experiment_name: cadence-benchgen-finsh
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  PLANNER_FULL: "planner_prefix_100m_pqsh"
+  TOK_FULL: "vqvae_owt9_1024_pqsh"
+  CONFIG: "configs/planner_prefix_100m_pqsh.yaml"
+  DATA_NAME: "owt9_gpt2"
+  GEN_SCRIPT: "generate_prefix.py"
+  SCHED_PRESET: "p5hot"
+  BENCHMARKS: "wikipedia wikisource tinystories lm1b"
+  TAG: "_final"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/benchgen_entry.sh

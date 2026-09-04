@@ -1,0 +1,22 @@
+experiment_name: cadence-tlditgen-b2btest_tinystories
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  RUN_NAME: "b2btest_tinystories"
+  FULL_NAME: "textldm_dit_owt2"
+  VAE_FULL: "textvae_owt2_g2"
+  BENCHMARKS: "tinystories"
+  STEPS: "50"
+  CFG_W: "7.0"
+  TAG: "_finalTLDM"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/tlditgen_entry.sh

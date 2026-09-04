@@ -1,0 +1,21 @@
+experiment_name: cadence-dumpcodes-owt9x1024
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 1
+  gpu_type: GPU_1xH100
+max_retries: 0
+timeout_minutes: 600
+env_variables:
+  RUN_NAME: "owt9tok"
+  FULL_NAME: "vqvae_owt9_1024_d5"
+  CONFIG: "configs/tokenizer_owt9_1024.yaml"
+  DATA_NAME: "owt9_gpt2"
+  TOKENIZER: "gpt2"
+  CODES_NAME: "codes_owt9_1024"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/dumpcodes_entry.sh

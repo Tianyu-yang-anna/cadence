@@ -1,0 +1,17 @@
+experiment_name: cadence-train-base
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 1
+  gpu_type: GPU_1xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  RUN_NAME: "base"
+  CONFIG: "configs/vqvae_wikitext.yaml"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/train_entry.sh

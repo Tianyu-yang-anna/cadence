@@ -1,0 +1,20 @@
+experiment_name: cadence-ssdlm-s1
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  RUN_NAME: "s1"
+  FULL_NAME: "ssdlm_owt2"
+  CONFIG: "configs/ssdlm_owt2.yaml"
+  DATA_NAME: "owt2_gpt2"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/ssdlm_entry.sh

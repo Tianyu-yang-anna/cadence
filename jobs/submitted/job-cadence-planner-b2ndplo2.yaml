@@ -1,0 +1,24 @@
+experiment_name: cadence-planner-b2ndplo2
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  RUN_NAME: "b2ndplo2"
+  FULL_NAME: "planner_prefix_owt2_pqsh_b2ndpl"
+  TOK_FULL_NAME: "vqvae_owt2_1024_pqsh"
+  CONFIG: "configs/planner_prefix_owt2_pqsh.yaml"
+  DATA_NAME: "owt2_gpt2"
+  CODES_NAME: "codes_owt2_1024_pqsh"
+  SRC_FULL: "planner_prefix_owt2_pqsh_b2nd"
+  TRAIN_SCRIPT: "finetune_prefix_maskgit.py"
+  EXTRA_ARGS: "--src_run planner_prefix_owt2_pqsh_b2nd --steps 2000 --mask_mode none --set train.lr=5e-5 --set train.warmup_steps=50 --set planner.depth_ar=false"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/planner_entry.sh

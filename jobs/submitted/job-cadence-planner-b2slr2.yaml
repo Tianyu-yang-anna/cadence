@@ -1,0 +1,25 @@
+experiment_name: cadence-planner-b2slr2
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 16
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 180
+env_variables:
+  RUN_NAME: "b2slr2"
+  FULL_NAME: "planner_prefix_owt2_pqsh_b2slr2"
+  SRC_FULL: "planner_prefix_owt2_pqsh_b2sq1"
+  TOK_FULL_NAME: "vqvae_owt2_1024_pqsh"
+  CONFIG: "configs/planner_prefix_owt2_pqsh.yaml"
+  DATA_NAME: "owt2_gpt2"
+  CODES_NAME: "codes_owt2_1024_pqsh"
+  TRAIN_SCRIPT: "finetune_prefix_maskgit.py"
+  EXTRA_ARGS: "--src_run planner_prefix_owt2_pqsh_b2sq1 --steps 1000 --set train.lr=5e-5 --set train.warmup_steps=50 --sampler --mask_mode sampler_lr --chunks 16 --lr_supervise chunk --mask_scales 8,9,10 --eval_scales 8,9,10 --set planner.sampler=true --set planner.depth_ar=true"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/planner_entry.sh

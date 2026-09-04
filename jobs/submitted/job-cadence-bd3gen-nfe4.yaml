@@ -1,0 +1,22 @@
+experiment_name: cadence-bd3gen-nfe4
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  RUN_NAME: "nfe4"
+  FULL_NAME: "bd3lm_owt2"
+  DATA_NAME: "owt2_gpt2"
+  NUM_STEPS: "4"
+  TAG: "_nfe4"
+  EXTRA_ARGS: "sampling.first_hitting=False"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/bd3gen_entry.sh

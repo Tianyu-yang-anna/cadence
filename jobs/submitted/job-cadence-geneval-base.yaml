@@ -1,0 +1,21 @@
+experiment_name: cadence-geneval-base
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 1
+  gpu_type: GPU_1xH100
+max_retries: 0
+timeout_minutes: 300
+env_variables:
+  PLANNER_RUN: "base"
+  AR_RUN: "base"
+  TOKENIZER_RUN: "hybrid"
+  CODES_NAME: "codes_hybrid"
+  DATA_NAME: "wikitext103_bert"
+  TOKENIZER: "bert-base-uncased"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/geneval_entry.sh

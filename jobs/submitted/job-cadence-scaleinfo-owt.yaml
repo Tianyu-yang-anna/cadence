@@ -1,0 +1,19 @@
+experiment_name: cadence-scaleinfo-owt
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 1
+  gpu_type: GPU_1xH100
+max_retries: 0
+timeout_minutes: 180
+env_variables:
+  RUN_NAME: "owtgpt2"
+  FULL_NAME: "vqvae_owt_gpt2hybrid"
+  DATA_NAME: "owt_gpt2"
+  TOKENIZER: "gpt2"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/scaleinfo_entry.sh

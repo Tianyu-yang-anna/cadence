@@ -1,0 +1,22 @@
+experiment_name: cadence-bd3gen-genmdf
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  RUN_NAME: "genmdf"
+  FULL_NAME: "mdlm_owt2"
+  ALGO: "mdlm"
+  ATTN_BACKEND: "sdpa"
+  BLOCK_SIZE: "1024"
+  DATA_NAME: "owt2_gpt2"
+  TAG: "_final"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/bd3gen_entry.sh

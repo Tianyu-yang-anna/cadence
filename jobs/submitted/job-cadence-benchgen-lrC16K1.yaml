@@ -1,0 +1,25 @@
+experiment_name: cadence-benchgen-lrC16K1
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 120
+env_variables:
+  GEN_SCRIPT: "generate_prefix.py"
+  PLANNER_FULL: "planner_prefix_owt2_pqsh_b2sp"
+  TOK_FULL: "vqvae_owt2_1024_pqsh"
+  CONFIG: "configs/planner_prefix_owt2_pqsh.yaml"
+  DATA_NAME: "owt2_gpt2"
+  BENCHMARKS: "sel_wikipedia sel_wikisource"
+  SCHED_PRESET: "p5hot7"
+  SAMPLE_MODE: "lr:8,9,10:16:1"
+  TAG: "_lrC16K1"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/benchgen_entry.sh

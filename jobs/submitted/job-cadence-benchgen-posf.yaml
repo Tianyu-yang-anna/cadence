@@ -1,0 +1,25 @@
+experiment_name: cadence-benchgen-posf
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  GEN_SCRIPT: "generate_prefix.py"
+  PLANNER_FULL: "planner_prefix_owt2_pqsh_b2spf"
+  TOK_FULL: "vqvae_owt2_1024_pqsh"
+  CONFIG: "configs/planner_prefix_owt2_pqsh.yaml"
+  DATA_NAME: "owt2_gpt2"
+  SCHED_PRESET: "p5hot7"
+  SAMPLE_MODE: "pos:8,9,10:8"
+  BENCHMARKS: "sel_wikipedia sel_wikisource"
+  TAG: "_posf"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/benchgen_entry.sh

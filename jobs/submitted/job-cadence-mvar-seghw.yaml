@@ -1,0 +1,20 @@
+experiment_name: cadence-mvar-seghw
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  RUN_NAME: "seghw"
+  SUBSET_N: "250"
+  BOOT: "12"
+  GEN_SPECS: "benchgen_planner_prefix_owt2_pqsh_b2sg/gens_wikipedia_finalSEG.jsonl benchgen_planner_prefix_owt2_pqsh_sg56ln/gens_wikipedia_finalSEGHWLN.jsonl"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/mvar_entry.sh

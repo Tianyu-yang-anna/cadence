@@ -1,0 +1,19 @@
+experiment_name: cadence-tldit-b2b
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 32
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  RUN_NAME: "b2b"
+  FULL_NAME: "textldm_dit_owt2"
+  VAE_FULL_NAME: "textvae_owt2_g2"
+  EXTRA_ARGS: "--ema 0.9999 --target_latent sample --latent_stats calibrate"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/tldit_entry.sh

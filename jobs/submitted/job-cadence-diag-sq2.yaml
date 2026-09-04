@@ -1,0 +1,23 @@
+experiment_name: cadence-diag-sq2
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  RUN_NAME: "sq2"
+  PLANNER_FULL: "planner_prefix_owt2_pqsh_b2sq2"
+  TOK_FULL: "vqvae_owt2_1024_pqsh"
+  CONFIG: "configs/planner_prefix_owt2_pqsh.yaml"
+  DATA_NAME: "owt2_gpt2"
+  CODES_NAME: "codes_owt2_1024_pqsh"
+  N_BATCHES: "16"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/diag_entry.sh

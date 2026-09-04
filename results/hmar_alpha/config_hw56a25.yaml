@@ -1,0 +1,102 @@
+run_name: planner_prefix_owt2_pqsh_hw56a25
+seed: 42
+model:
+  vocab_size: 50257
+  seq_len: 1024
+  d_model: 512
+  d_code: 32
+  rope_theta: 10000.0
+  tie_lm_head: true
+  encoder:
+    num_layers: 6
+    num_heads: 8
+    ffn_mult: 4
+    dropout: 0.0
+  decoder:
+    num_layers: 8
+    num_heads: 8
+    ffn_mult: 4
+    dropout: 0.0
+quantizer:
+  scales:
+  - 1
+  - 2
+  - 4
+  - 256
+  codebook_size: 8192
+  pq_segments: 0
+  shared_codebook: true
+  lookup: l2
+  ema_decay: 0.99
+  ema_eps: 1.0e-05
+  commitment_beta: 0.25
+  upsample_mode: nearest-exact
+  revival:
+    enabled: true
+    threshold: 1.0
+    interval: 100
+  phi:
+    enabled: false
+    kernel_size: 3
+data:
+  dataset: wikitext103
+  bin_dir: /tmp/cadence_local/data/owt2_gpt2
+  packing: contiguous
+  limit_windows: 0
+  num_workers: 4
+  synthetic_vocab: 1000
+train:
+  max_steps: 5630
+  batch_size: 256
+  micro_batch_size: 4
+  lr: 0.0003
+  min_lr_ratio: 0.1
+  warmup_steps: 400
+  weight_decay: 0.01
+  betas:
+  - 0.9
+  - 0.95
+  grad_clip: 1.0
+  bf16: true
+  bypass_vq_steps: 5000
+  bypass_ema_warmup: true
+  scale_dropout_p: 0.0
+  var_len_p: 0.0
+  var_len_lo: 16
+  var_len_pad_id: 50256
+  scale_weight: interp
+  scale_weight_mu: 1.98
+  scale_weight_sigma: 0.5
+  scale_weight_alpha: 0.25
+  eval_pad_lens: []
+  eval_segment_probe: false
+  log_interval: 50
+  eval_interval: 500
+  eval_batches: 20
+  save_interval: 1000
+  keep_last: 3
+  out_dir: /tmp/cadence_local/runs/${run_name}
+planner:
+  d_model: 768
+  n_layers: 12
+  n_heads: 12
+  ffn_mult: 4
+  rope_theta: 10000.0
+  cond_drop_p: 0.1
+  depth_ar: false
+  sampler: false
+  sampler_layers: 2
+  sampler_width: 384
+  sampler_heads: 6
+  prompt_encoder: bert-base-uncased
+  tokenizer_run_dir: /tmp/cadence_local/runs/vqvae_owt2_1024_pqsh
+  codes_dir: /tmp/cadence_local/data/codes_owt2_1024_pqsh
+  doc_aware: true
+  doc_mode: target
+  prompt_mixed: true
+  history_max: 0
+  plan_scales:
+  - 1
+  - 8
+  - 16
+  - 32

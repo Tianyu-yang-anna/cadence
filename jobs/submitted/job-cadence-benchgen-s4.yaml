@@ -1,0 +1,24 @@
+experiment_name: cadence-benchgen-s4
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 180
+env_variables:
+  PLANNER_FULL: "planner_owt1024"
+  TOK_FULL: "vqvae_owt9_1024_d5"
+  CONFIG: "configs/planner_owt1024.yaml"
+  DATA_NAME: "owt9_gpt2"
+  BENCHMARKS: "sel_tinystories sel_lm1b sel_wikipedia sel_wikisource"
+  N: "250"
+  TAG: "_s4"
+  TEMP_SCHEDULE: "1.2,1.2,1.1,1.1,1.0,0.9,0.8,0.7,0.5,0.3,0.1"
+  TOPP_SCHEDULE: "0.98,0.98,0.95,0.95,0.9,0.9,0.85,0.8,0.6,0.5,0.4"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/benchgen_entry.sh

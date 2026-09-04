@@ -1,0 +1,23 @@
+experiment_name: cadence-benchgen-swpo2sh_p5cold
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  PLANNER_FULL: "planner_prefix_owt2_pqsh"
+  TOK_FULL: "vqvae_owt2_1024_pqsh"
+  CONFIG: "configs/planner_prefix_owt2_pqsh.yaml"
+  DATA_NAME: "owt2_gpt2"
+  GEN_SCRIPT: "generate_prefix.py"
+  SCHED_PRESET: "p5cold"
+  BENCHMARKS: "sel_wikipedia sel_wikisource sel_tinystories sel_lm1b"
+  TAG: "_p5cold"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/benchgen_entry.sh

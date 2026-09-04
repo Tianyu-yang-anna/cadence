@@ -1,0 +1,19 @@
+experiment_name: cadence-owtprep-owt2
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 480
+env_variables:
+  MAX_TOKENS: "17e9"
+  DATA_OUT: "owt2_gpt2"
+  SOURCE: "Geralt-Targaryen/openwebtext2"
+  MATERIALIZE: "1"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/owtprep_entry.sh

@@ -1,0 +1,20 @@
+experiment_name: cadence-decdd-ddpso2
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  RUN_NAME: "ddpso2"
+  FULL_NAME: "vqvae_owt2_1024_pqps"
+  CONFIG: "configs/tokenizer_owt2_1024_pqps.yaml"
+  DATA_NAME: "owt2_gpt2"
+  STEPS: "12000"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/decdd_entry.sh

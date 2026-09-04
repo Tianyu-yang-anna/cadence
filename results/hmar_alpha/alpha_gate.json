@@ -1,0 +1,65 @@
+{
+  "definition": "total ladder description length = sum_k l_k * S * min-VAL seg bits(k); selection signal pre-registered in 终章十二 §2 (gate: <= b2nd + 2*sigma_batch, sigma≈997)",
+  "b2nd_reference_bits": 36619,
+  "gate_bits": 38613,
+  "arms": {
+    "hw56a25": {
+      "alpha": 0.25,
+      "total_bits": 38510.6,
+      "delta_vs_b2nd": 1891.6,
+      "qualifies": true,
+      "min_seg_bits": {
+        "q1": 3.3952,
+        "q2": 3.8847,
+        "q4": 4.4162,
+        "q8": 5.0196,
+        "q16": 5.4915,
+        "q32": 5.6645,
+        "q64": 5.5915,
+        "q128": 5.3503,
+        "q256": 5.2224,
+        "q512": 4.9673,
+        "q1024": 4.2643
+      }
+    },
+    "hw56a50": {
+      "alpha": 0.5,
+      "total_bits": 37245.7,
+      "delta_vs_b2nd": 626.7,
+      "qualifies": true,
+      "min_seg_bits": {
+        "q1": 3.4106,
+        "q2": 3.8834,
+        "q4": 4.4407,
+        "q8": 5.0349,
+        "q16": 5.5005,
+        "q32": 5.6684,
+        "q64": 5.6007,
+        "q128": 5.3571,
+        "q256": 5.1998,
+        "q512": 4.8715,
+        "q1024": 4.0071
+      }
+    },
+    "hw56a75": {
+      "alpha": 0.75,
+      "total_bits": 36538.3,
+      "delta_vs_b2nd": -80.7,
+      "qualifies": true,
+      "min_seg_bits": {
+        "q1": 3.4034,
+        "q2": 3.9483,
+        "q4": 4.4676,
+        "q8": 5.0659,
+        "q16": 5.5221,
+        "q32": 5.687,
+        "q64": 5.6234,
+        "q128": 5.374,
+        "q256": 5.2056,
+        "q512": 4.824,
+        "q1024": 3.8518
+      }
+    }
+  },
+  "winner": "hw56a25 (smallest alpha among qualifiers, pre-registered rule; margin 1.9 sigma, alpha=0.5 is the safe fallback)"
+}

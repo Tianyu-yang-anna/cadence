@@ -1,0 +1,17 @@
+experiment_name: cadence-schedsweep-v2
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  PLANNER_FULL: "planner_owt_v2"
+  TOK_FULL: "vqvae_owt_gpt2hybrid_dd"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/schedsweep_entry.sh

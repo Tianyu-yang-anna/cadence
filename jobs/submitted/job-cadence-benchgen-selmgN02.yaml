@@ -1,0 +1,24 @@
+experiment_name: cadence-benchgen-selmgN02
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  PLANNER_FULL: "planner_prefix_owt2_pqsh_b2mg3"
+  TOK_FULL: "vqvae_owt2_1024_pqsh"
+  CONFIG: "configs/planner_prefix_owt2_pqsh.yaml"
+  DATA_NAME: "owt2_gpt2"
+  GEN_SCRIPT: "generate_prefix.py"
+  SCHED_PRESET: "p5hot7"
+  REFINE: "8,9,10:8:0.2"
+  TAG: "_mgN02"
+  BENCHMARKS: "sel_wikipedia sel_wikisource"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/benchgen_entry.sh

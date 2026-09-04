@@ -1,0 +1,20 @@
+experiment_name: cadence-mvar-wiki
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 240
+env_variables:
+  RUN_NAME: "wiki"
+  SUBSET_N: "250"
+  BOOT: "20"
+  GEN_SPECS: "benchgen_planner_prefix_owt2_pqsh_hw76tk/gens_wikipedia_finalHWTK.jsonl benchgen_planner_prefix_owt2_pqsh_hw76ln/gens_wikipedia_finalHWLN.jsonl benchgen_planner_prefix_owt2_pqsh_b2sp/gens_wikipedia_finalPOS.jsonl benchgen_planner_prefix_owt2_pqsh_b2sp/gens_wikipedia_finalLR.jsonl"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+    allow_uncommitted: true
+command: |
+  bash $CODE_SOURCE_PATH/jobs/mvar_entry.sh

@@ -1,0 +1,20 @@
+experiment_name: cadence-train-bertD
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 1
+  gpu_type: GPU_1xH100
+max_retries: 0
+timeout_minutes: 600
+env_variables:
+  RUN_NAME: "bertD"
+  CONFIG: "configs/vqvae_wikitext_bert.yaml"
+  DATA_NAME: "wikitext103_bert"
+  TOKENIZER: "bert-base-uncased"
+  EXTRA_ARGS: "--set quantizer.scales=[1,4,16,64,256] --set quantizer.revival.interval=125"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/train_entry.sh

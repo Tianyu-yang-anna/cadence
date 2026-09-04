@@ -1,0 +1,18 @@
+experiment_name: cadence-train-schC
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 1
+  gpu_type: GPU_1xH100
+max_retries: 0
+timeout_minutes: 600
+env_variables:
+  RUN_NAME: "schC"
+  CONFIG: "configs/vqvae_wikitext.yaml"
+  EXTRA_ARGS: "--set quantizer.scales=[1,2,4,8,16,32,64,128,256] --set train.scale_dropout_p=0.5 --set quantizer.revival.interval=225"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/train_entry.sh

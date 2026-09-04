@@ -1,0 +1,22 @@
+experiment_name: cadence-dumpshard-dsho2_1
+environment:
+  dependencies: jobs/requirements.yaml
+compute:
+  gpus: 8
+  gpu_type: GPU_8xH100
+max_retries: 0
+timeout_minutes: 200
+env_variables:
+  SHARD: "1"
+  NSHARDS: "8"
+  RUN_NAME: "pqsho2"
+  FULL_NAME: "vqvae_owt2_1024_pqsh"
+  CONFIG: "configs/tokenizer_owt2_1024_pqsh.yaml"
+  DATA_NAME: "owt2_gpt2"
+  CODES_NAME: "codes_owt2_1024_pqsh"
+code_source:
+  type: snapshot
+  snapshot:
+    repo_path: .
+command: |
+  bash $CODE_SOURCE_PATH/jobs/dumpshard_entry.sh
