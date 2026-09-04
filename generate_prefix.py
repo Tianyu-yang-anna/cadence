@@ -139,25 +139,39 @@ def main():
                     if args.chunk_scales else None)
     if chunk_scales is not None:
         assert args.chunk_count > 1, "--chunk_scales requires --chunk_count > 1"
-    sample_mode, sample_scales, sample_steps, sample_chunks = "", None, 0, 0
-    if args.sample_mode:
-        parts = args.sample_mode.split(":")
-        sample_mode = parts[0]
-        assert sample_mode in ("pos", "seg", "ar", "lr", "lrseg"), \
-            f"--sample_mode must start with pos|seg|ar|lr|lrseg, " \
-            f"got '{args.sample_mode}'"
-        assert len(parts) == {"ar": 2, "lr": 4, "lrseg": 4}.get(sample_mode, 3), \
-            "--sample_mode is 'pos:<scales>:<K>' | 'seg:<scales>:<K>' | " \
+    def parse_one(spec):
+        parts = spec.split(":")
+        mode = parts[0]
+        assert mode in ("pos", "seg", "ar", "lr", "lrseg"), \
+            f"--sample_mode group must start with pos|seg|ar|lr|lrseg, " \
+            f"got '{spec}'"
+        assert len(parts) == {"ar": 2, "lr": 4, "lrseg": 4}.get(mode, 3), \
+            "--sample_mode group is 'pos:<scales>:<K>' | 'seg:<scales>:<K>' | " \
             "'ar:<scales>' | 'lr:<scales>:<C>:<K>' | 'lrseg:<scales>:<C>:<Kseg>'"
-        sample_scales = (list(range(K)) if parts[1] == "all"
-                         else [int(x) for x in parts[1].split(",")])
-        if sample_mode in ("lr", "lrseg"):
-            sample_chunks, sample_steps = int(parts[2]), int(parts[3])
-            assert sample_chunks > 0, f"--sample_mode {sample_mode} needs C > 0"
-            assert sample_steps > 0, f"--sample_mode {sample_mode} needs K > 0"
-        elif sample_mode != "ar":
-            sample_steps = int(parts[2])
-            assert sample_steps > 0, "--sample_mode pos/seg need K > 0"
+        scales_g = (list(range(K)) if parts[1] == "all"
+                    else [int(x) for x in parts[1].split(",")])
+        steps_g, chunks_g = 0, 0
+        if mode in ("lr", "lrseg"):
+            chunks_g, steps_g = int(parts[2]), int(parts[3])
+            assert chunks_g > 0, f"--sample_mode {mode} needs C > 0"
+            assert steps_g > 0, f"--sample_mode {mode} needs K > 0"
+        elif mode != "ar":
+            steps_g = int(parts[2])
+            assert steps_g > 0, "--sample_mode pos/seg need K > 0"
+        return mode, scales_g, steps_g, chunks_g
+
+    sample_mode, sample_scales, sample_steps, sample_chunks = "", None, 0, 0
+    sample_mode2, sample_scales2, sample_steps2, sample_chunks2 = "", None, 0, 0
+    if args.sample_mode:
+        # '+'-joined groups spend the sampler budget differently per scale
+        # band, e.g. 'seg:0,1,2,3,4,5,6,7:4+lrseg:8,9,10:2:2'
+        groups = args.sample_mode.split("+")
+        assert len(groups) <= 2, "--sample_mode supports at most two groups"
+        sample_mode, sample_scales, sample_steps, sample_chunks = \
+            parse_one(groups[0])
+        if len(groups) == 2:
+            sample_mode2, sample_scales2, sample_steps2, sample_chunks2 = \
+                parse_one(groups[1])
         assert use_sampler, "--sample_mode needs a sampler-equipped checkpoint"
     max_prompt = args.max_prompt_tokens or seq_len
 
@@ -211,7 +225,11 @@ def main():
                                     sample_mode=sample_mode,
                                     sample_scales=sample_scales,
                                     sample_steps=sample_steps,
-                                    sample_chunks=sample_chunks)
+                                    sample_chunks=sample_chunks,
+                                    sample_mode2=sample_mode2,
+                                    sample_scales2=sample_scales2,
+                                    sample_steps2=sample_steps2,
+                                    sample_chunks2=sample_chunks2)
         with ac():
             logits = tokenizer.decode_latent(f_hat.to(
                 next(tokenizer.decoder.parameters()).dtype))

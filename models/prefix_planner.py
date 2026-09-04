@@ -582,6 +582,10 @@ class PrefixVARPlanner(nn.Module):
                  sample_scales: list[int] | None = None,
                  sample_steps: int = 0,
                  sample_chunks: int = 0,
+                 sample_mode2: str = "",
+                 sample_scales2: list[int] | None = None,
+                 sample_steps2: int = 0,
+                 sample_chunks2: int = 0,
                  sample_cache: bool = True):
         """Next-scale sampling; K forwards, segments sampled INDEPENDENTLY
         within a position (the known PQ risk — depth-AR is the planned
@@ -616,18 +620,31 @@ class PrefixVARPlanner(nn.Module):
         chunked = set(chunk_scales or []) if chunk_count > 1 else set()
         assert not (refine & chunked), \
             "a scale cannot use both MaskGIT refinement and chunk-AR"
-        assert sample_mode in ("", "pos", "seg", "ar", "lr", "lrseg"), \
-            f"unknown sample_mode {sample_mode}"
-        sampled = set(sample_scales or []) if sample_mode else set()
+        # up to TWO sampler groups so one decode can spend its NFE
+        # differently per scale band (e.g. seg on the coarse scales + the 2D
+        # lrseg on the fine ones). route: scale -> (mode, steps, chunks).
+        route: dict[int, tuple[str, int, int]] = {}
+        for gm, gs, gst, gch in ((sample_mode, sample_scales, sample_steps,
+                                  sample_chunks),
+                                 (sample_mode2, sample_scales2, sample_steps2,
+                                  sample_chunks2)):
+            if not gm:
+                continue
+            assert gm in ("pos", "seg", "ar", "lr", "lrseg"), \
+                f"unknown sample_mode {gm}"
+            if gm in ("pos", "seg", "lr", "lrseg"):
+                assert gst > 0, f"sample_mode '{gm}' needs steps"
+            if gm in ("lr", "lrseg"):
+                assert gch > 0, f"sample_mode '{gm}' needs sample_chunks > 0"
+            for k_ in (gs or []):
+                assert k_ not in route, \
+                    f"scale {k_} appears in both sampler groups"
+                route[k_] = (gm, gst, gch)
+        sampled = set(route)
         assert not sampled or self.sampler is not None, \
             "sample_mode requires a sampler-equipped planner"
         assert not (sampled & (refine | chunked)), \
             "a scale cannot use both the sampler and refine/chunk-AR"
-        if sampled and sample_mode in ("pos", "seg", "lr", "lrseg"):
-            assert sample_steps > 0, f"sample_mode '{sample_mode}' needs steps"
-        if sampled and sample_mode in ("lr", "lrseg"):
-            assert sample_chunks > 0, \
-                f"sample_mode '{sample_mode}' needs sample_chunks > 0"
         null_e = null_mask = None
         if any(c != 1.0 for k, c in enumerate(cfgs) if k not in forced):
             null_e = self.null_prefix.to(prefix_e.dtype)[None, None, :].expand(
@@ -1045,12 +1062,16 @@ class PrefixVARPlanner(nn.Module):
                 elif k in chunked:
                     codes_k = _chunk_ar_scale(maps, k, seg_start, l)
                 elif k in sampled:
+                    # the sampler closures read sample_steps/sample_chunks
+                    # LATE (at call time), so rebinding here routes each
+                    # scale through its own group's hyperparameters
+                    mode_k, sample_steps, sample_chunks = route[k]
                     codes_k = {"pos": _sampler_pos_scale,
                                "seg": _sampler_seg_scale,
                                "lr": _sampler_lr_scale,
                                "lrseg": _sampler_lrseg_scale,
                                "ar": (_sampler_ar_cached if sample_cache
-                                      else _sampler_ar_scale)}[sample_mode](
+                                      else _sampler_ar_scale)}[mode_k](
                                    maps, k, seg_start, l)
                 else:
                     codes_k, _ = _sample_block(maps, k, seg_start, l)

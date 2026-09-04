@@ -757,3 +757,105 @@ def test_lrseg_training_mask_matches_decode_states():
     assert bool(part.any()), "no partial segment reveals — not a 2D pattern"
     # coverage: every C in the grid actually drawn
     assert set(Cs.tolist()) == set(grid), "some chunk count never sampled"
+
+
+# ------------------------------------------- T10 two-group ('mixed') decode
+
+@requires_planner_sampler
+@pytest.mark.parametrize("cfg", [1.0, 1.5])
+def test_two_group_seg_plus_lrseg_c1_equals_single_seg_all(cfg):
+    """The exactness anchor for the mixed decode: group A 'seg' on the coarse
+    scales + group B 'lrseg' with C=1 on the fine ones must be bit-identical
+    to a single 'seg' group over the union at the same K — C=1 lrseg IS seg,
+    and the routing must not perturb RNG order or state."""
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(2, n_pad=5)
+    n = len(SCALES)
+    coarse, fine = list(range(n - 2)), [n - 2, n - 1]
+    with torch.no_grad():
+        a, fa = planner.generate(pe, prefix_mask=pm, cfg_scale=cfg,
+                                 sample_mode="seg", sample_scales=coarse + fine,
+                                 sample_steps=4,
+                                 generator=torch.Generator().manual_seed(7))
+        b, fb = planner.generate(pe, prefix_mask=pm, cfg_scale=cfg,
+                                 sample_mode="seg", sample_scales=coarse,
+                                 sample_steps=4,
+                                 sample_mode2="lrseg", sample_scales2=fine,
+                                 sample_steps2=4, sample_chunks2=1,
+                                 generator=torch.Generator().manual_seed(7))
+    assert torch.equal(a, b), "mixed seg+lrseg(C=1) != seg over the union"
+    assert torch.equal(fa, fb), "mixed routing moved f_hat"
+
+
+@requires_planner_sampler
+def test_two_group_nfe_is_the_sum_of_both_groups():
+    """Cost claim for the mixed sweep: sampler passes = 2*K_A per group-A
+    scale + 2*C*K_B per group-B scale, backbone pinned at 2 per scale."""
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(1)
+    trunk, passes = [], []
+    real_trunk = planner._trunk
+    planner._trunk = lambda *a, **kw: (trunk.append(1), real_trunk(*a, **kw))[1]
+    for blk in planner.sampler.blocks:
+        blk.forward = (lambda f: lambda *a, **kw:
+                       (passes.append(1), f(*a, **kw))[1])(blk.forward)
+    n = len(SCALES)
+    coarse, fine = list(range(n - 2)), [n - 2, n - 1]
+    K_A, C_B, K_B = 4, 2, 2
+    with torch.no_grad():
+        planner.generate(pe, prefix_mask=pm, cfg_scale=1.5,
+                         sample_mode="seg", sample_scales=coarse,
+                         sample_steps=K_A,
+                         sample_mode2="lrseg", sample_scales2=fine,
+                         sample_steps2=K_B, sample_chunks2=C_B,
+                         generator=torch.Generator().manual_seed(7))
+    n_layers = len(planner.sampler.blocks)
+    want = sum(2 * n_layers * min(K_A, planner.segments) for _ in coarse) + \
+        sum(2 * n_layers * min(C_B, SCALES[k]) * K_B for k in fine)
+    assert len(trunk) == 2 * len(SCALES), "the backbone NFE moved"
+    assert len(passes) == want, f"{len(passes)} != {want}"
+
+
+@requires_planner_sampler
+def test_two_group_rejects_overlapping_scales():
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(1)
+    with pytest.raises(AssertionError, match="both sampler groups"):
+        planner.generate(pe, prefix_mask=pm,
+                         sample_mode="seg", sample_scales=[1, 2],
+                         sample_steps=4,
+                         sample_mode2="lrseg", sample_scales2=[2, 3],
+                         sample_steps2=2, sample_chunks2=2)
+
+
+def test_seg2d_training_mask_is_each_familys_pattern_on_its_band():
+    """sampler_seg2d must give the lrseg band the chunk-structured reveal
+    (contiguous fully-committed prefix + within-chunk segment subsets +
+    fully-masked right) and every other band sampler_seg's whole-scale
+    subsets, with supervision = each family's own scope."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "ft", Path(__file__).resolve().parents[1] / "finetune_prefix_maskgit.py")
+    ft = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ft)
+    torch.manual_seed(0)
+    B, l, S = 64, 32, 4
+    revealed, sup = ft.lrseg_reveal(B, l, S, 8, torch.device("cpu"))
+    fully = revealed.all(-1)
+    idx = torch.arange(l)
+    for b in range(B):
+        # committed prefix is contiguous (n_rev < S so the current chunk
+        # never becomes fully revealed)
+        pref = int(fully[b].long().cumsum(0)[-1])
+        assert bool((fully[b][:pref]).all()), "prefix not contiguous"
+        assert not bool(fully[b][pref:].any()), "committed island after prefix"
+        # supervision only on masked slots, and on a contiguous chunk
+        assert not bool((sup[b] & revealed[b]).any())
+        rows = sup[b].any(-1).nonzero().flatten()
+        if len(rows) > 1:
+            assert int(rows[-1] - rows[0]) == len(rows) - 1, \
+                "supervised rows not one contiguous chunk"
+    # partial segment reveals exist (the 2D signature)
+    part = (revealed.sum(-1) > 0) & (revealed.sum(-1) < S)
+    assert bool(part.any())
