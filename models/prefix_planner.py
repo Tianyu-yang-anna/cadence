@@ -616,17 +616,18 @@ class PrefixVARPlanner(nn.Module):
         chunked = set(chunk_scales or []) if chunk_count > 1 else set()
         assert not (refine & chunked), \
             "a scale cannot use both MaskGIT refinement and chunk-AR"
-        assert sample_mode in ("", "pos", "seg", "ar", "lr"), \
+        assert sample_mode in ("", "pos", "seg", "ar", "lr", "lrseg"), \
             f"unknown sample_mode {sample_mode}"
         sampled = set(sample_scales or []) if sample_mode else set()
         assert not sampled or self.sampler is not None, \
             "sample_mode requires a sampler-equipped planner"
         assert not (sampled & (refine | chunked)), \
             "a scale cannot use both the sampler and refine/chunk-AR"
-        if sampled and sample_mode in ("pos", "seg", "lr"):
+        if sampled and sample_mode in ("pos", "seg", "lr", "lrseg"):
             assert sample_steps > 0, f"sample_mode '{sample_mode}' needs steps"
-        if sampled and sample_mode == "lr":
-            assert sample_chunks > 0, "sample_mode 'lr' needs sample_chunks > 0"
+        if sampled and sample_mode in ("lr", "lrseg"):
+            assert sample_chunks > 0, \
+                f"sample_mode '{sample_mode}' needs sample_chunks > 0"
         null_e = null_mask = None
         if any(c != 1.0 for k, c in enumerate(cfgs) if k not in forced):
             null_e = self.null_prefix.to(prefix_e.dtype)[None, None, :].expand(
@@ -911,6 +912,66 @@ class PrefixVARPlanner(nn.Module):
                 committed.scatter_(2, keep, True)
             return cur
 
+        def _sampler_lrseg_scale(maps, k, seg_start, l):
+            """2D MaskGIT combining the two intra-scale axes: the POSITION
+            axis walks sample_chunks contiguous chunks STRICTLY left to right
+            (as _sampler_lr_scale walks — chunks < c fully committed, chunks
+            > c untouched), and INSIDE the current chunk the SEGMENT axis runs
+            _sampler_seg_scale's schedule: sample_steps (<= S) passes, each
+            committing the top-confidence segments PER POSITION and feeding
+            them back through the sampler's segment axis.
+
+            Everything runs the SEGMENT convention (no causal right shift:
+            chunks are refined bidirectionally inside, and the segment token
+            stream has no position-shift concept), which is exactly the
+            convention the sampler_lrseg finetune supervises. Readout is the
+            per-slot parallel diagonal pick 'seg' uses — NOT the depth-AR
+            chain — so with depth_projs frozen the arm is pure 2D MaskGIT.
+
+            Degenerate corners: C=1 is bit-identical to 'seg' (one chunk
+            covering the scale IS the segment schedule); sample_steps=1 with
+            C chunks is chunk-sequential position decoding with all S
+            segments of a chunk drawn in one parallel pass.
+
+            Cost: 2 * C * min(sample_steps, S) sampler forwards per scale
+            (2 = CFG branches), backbone unchanged at 2 per scale."""
+            S = self.segments
+            steps = max(1, min(sample_steps, S))
+            C = max(1, min(sample_chunks, l))
+            base, rem = divmod(l, C)
+            sizes = [base + (1 if i < rem else 0) for i in range(C)]
+            h_c, h_u = _cached_hidden(maps, k, seg_start, l)
+            coords = coords_all[seg_start:seg_start + l]
+            cur = torch.zeros(B, l, S, dtype=torch.long, device=device)
+            committed = torch.zeros(B, l, S, dtype=torch.bool, device=device)
+            done = 0
+            for sz in sizes:
+                sl = slice(done, done + sz)
+                for j in range(steps):
+                    st_c, st_u = _sampler_states(h_c, h_u, k, cur, committed,
+                                                 "segment", coords)
+                    # only the current chunk is read out, mirroring
+                    # _sampler_lr_scale: the committed prefix and the masked
+                    # tail need no head work
+                    lo = _sampler_readout_cfg(
+                        st_c[:, sl], None if st_u is None else st_u[:, sl],
+                        k, cur[:, sl], "segment")
+                    s_codes, lp = _draw(lo, k)
+                    cur[:, sl] = torch.where(committed[:, sl], cur[:, sl],
+                                             s_codes)
+                    if j == steps - 1:
+                        break
+                    n_keep = max(1, min(S, int(round(S * (j + 1) / steps))))
+                    conf = torch.where(committed[:, sl],
+                                       torch.full_like(lp, float("inf")), lp)
+                    keep = conf.topk(n_keep, dim=-1, largest=True).indices
+                    nc = torch.zeros(B, sz, S, dtype=torch.bool, device=device)
+                    nc.scatter_(2, keep, True)
+                    committed[:, sl] = nc
+                committed[:, sl] = True
+                done += sz
+            return cur
+
         def _sampler_ar_cached(maps, k, seg_start, l):
             """_sampler_ar_scale at O(l) sampler token-forwards instead of
             O(l^2): once position i-1 is drawn the causal token stream of every
@@ -987,6 +1048,7 @@ class PrefixVARPlanner(nn.Module):
                     codes_k = {"pos": _sampler_pos_scale,
                                "seg": _sampler_seg_scale,
                                "lr": _sampler_lr_scale,
+                               "lrseg": _sampler_lrseg_scale,
                                "ar": (_sampler_ar_cached if sample_cache
                                       else _sampler_ar_scale)}[sample_mode](
                                    maps, k, seg_start, l)

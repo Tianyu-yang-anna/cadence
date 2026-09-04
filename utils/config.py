@@ -112,9 +112,10 @@ class TrainConfig:
     # "equal" = w(k)=1/K, "lognormal" = log-normal over the scale INDEX k=1..K
     # generated from mu/sigma at run time (fitted to our own min-test-CE
     # difficulty curve by tools/scale_difficulty.py).
-    scale_weight: str = "token"     # token | equal | lognormal
+    scale_weight: str = "token"     # token | equal | lognormal | interp
     scale_weight_mu: float = 1.98
     scale_weight_sigma: float = 0.50
+    scale_weight_alpha: float = 0.5  # interp only: 1=token .. 0=lognormal
     # periodic-eval extras: padded-window recon buckets + PQ segment probe
     eval_pad_lens: list[int] = field(default_factory=list)
     eval_segment_probe: bool = False

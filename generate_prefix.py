@@ -143,17 +143,18 @@ def main():
     if args.sample_mode:
         parts = args.sample_mode.split(":")
         sample_mode = parts[0]
-        assert sample_mode in ("pos", "seg", "ar", "lr"), \
-            f"--sample_mode must start with pos|seg|ar|lr, got '{args.sample_mode}'"
-        assert len(parts) == {"ar": 2, "lr": 4}.get(sample_mode, 3), \
+        assert sample_mode in ("pos", "seg", "ar", "lr", "lrseg"), \
+            f"--sample_mode must start with pos|seg|ar|lr|lrseg, " \
+            f"got '{args.sample_mode}'"
+        assert len(parts) == {"ar": 2, "lr": 4, "lrseg": 4}.get(sample_mode, 3), \
             "--sample_mode is 'pos:<scales>:<K>' | 'seg:<scales>:<K>' | " \
-            "'ar:<scales>' | 'lr:<scales>:<C>:<K>'"
+            "'ar:<scales>' | 'lr:<scales>:<C>:<K>' | 'lrseg:<scales>:<C>:<Kseg>'"
         sample_scales = (list(range(K)) if parts[1] == "all"
                          else [int(x) for x in parts[1].split(",")])
-        if sample_mode == "lr":
+        if sample_mode in ("lr", "lrseg"):
             sample_chunks, sample_steps = int(parts[2]), int(parts[3])
-            assert sample_chunks > 0, "--sample_mode lr needs C > 0"
-            assert sample_steps > 0, "--sample_mode lr needs K > 0"
+            assert sample_chunks > 0, f"--sample_mode {sample_mode} needs C > 0"
+            assert sample_steps > 0, f"--sample_mode {sample_mode} needs K > 0"
         elif sample_mode != "ar":
             sample_steps = int(parts[2])
             assert sample_steps > 0, "--sample_mode pos/seg need K > 0"

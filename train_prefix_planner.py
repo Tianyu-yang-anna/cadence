@@ -60,7 +60,9 @@ def per_scale_seg_bits(logits: torch.Tensor, codes: torch.Tensor,
 
 
 def scale_weight_vector(mode: str, n_scales: int, mu: float,
-                        sigma: float) -> torch.Tensor | None:
+                        sigma: float, alpha: float = 0.5,
+                        scales: list[int] | None = None
+                        ) -> torch.Tensor | None:
     """HMAR (CVPR 2025) Sec. 4.3 per-scale loss weights, 0 <= w(k) <= 1,
     sum_k w(k) = 1. None means "token": no reweighting at all, i.e. the single
     flattened CE whose implicit per-scale weight is proportional to l_k.
@@ -68,7 +70,16 @@ def scale_weight_vector(mode: str, n_scales: int, mu: float,
     "lognormal" evaluates the log-normal density over the scale INDEX
     k = 1..K (harder middle scales get more weight); the normalising constant
     drops out, but the 1/k Jacobian does not. mu/sigma are fitted to this
-    corpus' own min-test-CE difficulty curve by tools/scale_difficulty.py."""
+    corpus' own min-test-CE difficulty curve by tools/scale_difficulty.py.
+
+    "interp" is the geometric interpolation between the two measured
+    endpoints, w(k) ∝ token(k)^alpha * lognormal(k)^(1-alpha) with
+    token(k) = l_k / sum(l): alpha=1 IS the token weighting (up to
+    normalisation) and alpha=0 IS lognormal, so the sweep axis has both
+    registered configurations as its ends. The point of alpha is the measured
+    failure split — lognormal fixes 9 of 11 scales but costs q1024 0.79
+    bits while q1024 holds half the ladder; alpha buys that scale's weight
+    back smoothly instead of via an ad-hoc floor. Requires `scales`."""
     if mode == "token":
         return None
     if mode == "equal":
@@ -76,6 +87,14 @@ def scale_weight_vector(mode: str, n_scales: int, mu: float,
     elif mode == "lognormal":
         k = torch.arange(1, n_scales + 1, dtype=torch.float64)
         w = torch.exp(-((k.log() - mu) ** 2) / (2.0 * sigma ** 2)) / k
+    elif mode == "interp":
+        assert scales is not None and len(scales) == n_scales, \
+            "interp needs the ladder lengths (train.scale_weight_alpha path)"
+        assert 0.0 <= alpha <= 1.0, f"alpha must be in [0,1], got {alpha}"
+        k = torch.arange(1, n_scales + 1, dtype=torch.float64)
+        ln = torch.exp(-((k.log() - mu) ** 2) / (2.0 * sigma ** 2)) / k
+        tok = torch.tensor([float(l) for l in scales], dtype=torch.float64)
+        w = (tok / tok.sum()).pow(alpha) * (ln / ln.sum()).pow(1.0 - alpha)
     else:
         raise ValueError(f"unknown train.scale_weight {mode!r}")
     return (w / w.sum()).float()
@@ -192,7 +211,9 @@ def main():
             p.requires_grad_(False)
     scale_w = scale_weight_vector(cfg.train.scale_weight, len(scales),
                                   cfg.train.scale_weight_mu,
-                                  cfg.train.scale_weight_sigma)
+                                  cfg.train.scale_weight_sigma,
+                                  alpha=cfg.train.scale_weight_alpha,
+                                  scales=scales)
     if scale_w is not None:
         scale_w = scale_w.to(device)
     n_params = sum(p.numel() for p in planner.parameters() if p.requires_grad)
@@ -205,7 +226,8 @@ def main():
         wtxt = "implicit l_k (flattened CE)" if scale_w is None else json.dumps(
             {f"q{l}": round(float(w), 6) for l, w in zip(scales, scale_w.tolist())})
         log_line(f"scale_weight={cfg.train.scale_weight} "
-                 f"(mu={cfg.train.scale_weight_mu} sigma={cfg.train.scale_weight_sigma}) "
+                 f"(mu={cfg.train.scale_weight_mu} sigma={cfg.train.scale_weight_sigma} "
+                 f"alpha={cfg.train.scale_weight_alpha}) "
                  f"sum={1.0 if scale_w is None else float(scale_w.sum()):.6f} w={wtxt}")
     torch.manual_seed(cfg.seed * 1000 + rank + 1)
 

@@ -70,7 +70,7 @@ def main():
     ap.add_argument("--mask_mode", default="bernoulli",
                     choices=["bernoulli", "chunk_prefix", "none",
                              "sampler_pos", "sampler_seg", "sampler_causal",
-                             "sampler_lr", "sampler_mix"],
+                             "sampler_lr", "sampler_lrseg", "sampler_mix"],
                     help="bernoulli=MaskGIT random reveal; chunk_prefix=reveal "
                          "the first m of --chunks contiguous chunks (chunk-AR "
                          "training); none=plain CE continuation (no reveal); "
@@ -79,7 +79,9 @@ def main():
                          "every position of every scale, causal=strict "
                          "left-to-right, mix=50/50 pos/causal)")
     ap.add_argument("--chunks", type=int, default=16,
-                    help="chunk grid for chunk_prefix and sampler_lr "
+                    help="chunk grid for chunk_prefix, sampler_lr and "
+                         "sampler_lrseg (lrseg draws C per sample from this "
+                         "grid's divisors) "
                          "(inference chunk counts that divide this grid stay "
                          "train-consistent)")
     ap.add_argument("--lr_supervise", default="chunk",
@@ -128,7 +130,10 @@ def main():
     # uniformly-random reveals essentially never produce.
     sampler_mode = {"sampler_pos": "position", "sampler_seg": "segment",
                     "sampler_causal": "causal",
-                    "sampler_lr": "position"}.get(args.mask_mode, "position")
+                    "sampler_lr": "position",
+                    # the 2D decode runs the segment convention everywhere
+                    # (no causal shift; chunks refined bidirectionally inside)
+                    "sampler_lrseg": "segment"}.get(args.mask_mode, "position")
     sampler_arm = args.mask_mode.startswith("sampler_")
     use_sampler = args.sampler or cfg.planner.sampler
     assert use_sampler or not sampler_arm, \
@@ -147,10 +152,11 @@ def main():
     # the POSITION arms read out through the depth chain (the two axes stay
     # orthogonal), so depth_projs are in the graph and must train — otherwise
     # 'pos'/'ar' would also silently turn off depth-AR, the largest measured
-    # lever. Only sampler_seg freezes them: there the sampler is the single
-    # segment-coupling mechanism under test and its control is the fixed-order
-    # depth-AR baseline.
-    if not cfg.planner.depth_ar or args.mask_mode == "sampler_seg":
+    # lever. sampler_seg and sampler_lrseg freeze them: both read out through
+    # the per-slot parallel diagonal pick, so the sampler is the single
+    # segment-coupling mechanism under test.
+    if not cfg.planner.depth_ar or args.mask_mode in ("sampler_seg",
+                                                       "sampler_lrseg"):
         for p in planner.depth_projs.parameters():
             p.requires_grad_(False)
 
@@ -266,7 +272,14 @@ def main():
                     arm = ("sampler_causal" if float(torch.rand(())) < 0.5
                            else "sampler_pos")
                     smode = "causal" if arm == "sampler_causal" else "position"
-                smask = torch.zeros(B, L_total, dtype=torch.bool, device=device)
+                # sampler_lrseg reveals at SEGMENT granularity, so its mask
+                # carries the S axis; the position arms share one flag per
+                # position
+                smask = (torch.zeros(B, L_total, S, dtype=torch.bool,
+                                     device=device)
+                         if arm == "sampler_lrseg" else
+                         torch.zeros(B, L_total, dtype=torch.bool,
+                                     device=device))
                 # EVERY listed scale gets a reveal pattern in EVERY sample (no
                 # per-sample pick): the decode runs the sampler at all of them,
                 # so leaving the unpicked ones on an all-mask committed stream
@@ -313,6 +326,50 @@ def main():
                         sup = (~revealed if args.lr_supervise == "all"
                                else (current & ~inner))
                         w[sup] = 1.0
+                    elif arm == "sampler_lrseg":
+                        # the 2D decode's states: chunks left of the current
+                        # one fully committed (all S segments), a per-position
+                        # random SEGMENT subset committed inside it (what the
+                        # confidence schedule walks through, exactly as
+                        # sampler_seg trains its own axis), chunks to the
+                        # right fully masked.
+                        #
+                        # C is drawn PER SAMPLE from the divisors of --chunks:
+                        # the chunk WIDTH is part of the state (a chunk twice
+                        # as wide holds twice the partially-committed span),
+                        # so a single grid would leave every other inference C
+                        # out of distribution — the exact E1 failure class.
+                        # The cost is a 1/len(grid) dilution per C, disclosed
+                        # in the report.
+                        grid = [c for c in (1, 2, 4, 8, 16)
+                                if c <= args.chunks and args.chunks % c == 0]
+                        for c_ in grid:
+                            assert l % c_ == 0, \
+                                f"scale l={l} not divisible by chunk count {c_}"
+                        Cs = torch.tensor(grid, device=device)[
+                            torch.randint(0, len(grid), (B,), device=device)]
+                        # uniform chunk index per sample: rand < 1 so the
+                        # floor is already < Cs; minimum() is belt-and-braces
+                        ci = torch.minimum((torch.rand(B, device=device)
+                                            * Cs).long(), Cs - 1)
+                        start = (ci * l) // Cs
+                        end = ((ci + 1) * l) // Cs
+                        idx = torch.arange(l, device=device)[None, :]
+                        before = idx < start[:, None]
+                        current = (idx >= start[:, None]) & (idx < end[:, None])
+                        # n_rev in [0, S): the decode's rounds see 0..S-1
+                        # committed segments per position, never all S
+                        n_rev = torch.randint(0, S, (B, l, 1), device=device)
+                        seg_rev = torch.rand(B, l, S, device=device) \
+                            .argsort(-1) < n_rev
+                        revealed = before[..., None] | (current[..., None]
+                                                        & seg_rev)
+                        smask[:, a:a + l] = revealed
+                        w[:] = 0.0
+                        # supervise ONLY the current chunk's masked slots:
+                        # the decode reads out cur[:, sl] and nothing else
+                        # (the sampler_lr lesson, applied from the start)
+                        w[current[..., None] & ~seg_rev] = 1.0
                     else:
                         r = torch.cos(math.pi / 2 * torch.rand(B, 1, device=device))
                         masked = torch.rand(B, l, device=device) < r

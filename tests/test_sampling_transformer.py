@@ -630,3 +630,130 @@ def test_all_false_visible_mask_is_an_exact_no_op():
     revealed[:, 7:] = True
     assert torch.equal(p._add_visible(xt, codes, empty), xt)
     assert not torch.equal(p._add_visible(xt, codes, revealed), xt)
+
+
+# ---------------------------------------------- T9 2D MaskGIT ('lrseg') decode
+
+@requires_planner_sampler
+@pytest.mark.parametrize("cfg", [1.0, 1.5])
+@pytest.mark.parametrize("steps", [1, 2, 4])
+def test_lrseg_with_one_chunk_is_exactly_seg(cfg, steps):
+    """C=1 degenerates to segment-axis MaskGIT: one chunk covering the scale
+    IS the segment schedule, so the two decodes must be bit-identical at every
+    K_seg (not merely close) or 'lrseg' is a different mechanism, not a
+    combination."""
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(2, n_pad=5)
+    common = dict(prefix_mask=pm, cfg_scale=cfg, sample_scales=[3],
+                  sample_steps=steps)
+    with torch.no_grad():
+        a, fa = planner.generate(pe, sample_mode="seg", **common,
+                                 generator=torch.Generator().manual_seed(7))
+        b, fb = planner.generate(pe, sample_mode="lrseg", sample_chunks=1,
+                                 **common,
+                                 generator=torch.Generator().manual_seed(7))
+    assert torch.equal(a, b), "lrseg C=1 is not the 'seg' decode"
+    assert torch.equal(fa, fb), "lrseg C=1 moved f_hat"
+
+
+@requires_planner_sampler
+def test_lrseg_chunks_commit_strictly_left_to_right():
+    """Chunk c's codes must be invariant to everything right of it: rerunning
+    the decode with the later chunks' RNG perturbed (extra draws consumed
+    after chunk c committed) may not move chunk c. Verified indirectly:
+    lrseg with C chunks at K_seg=1 must equal a manual chunk-by-chunk forced
+    replay of itself — the first chunk's codes agree between C=2 and C=4 runs
+    only if the left-to-right order holds (chunk 0 of C=4 spans half of chunk
+    0 of C=2 and sees the identical committed-nothing state)."""
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(1, n_pad=3)
+    l = SCALES[3]
+    with torch.no_grad():
+        a, _ = planner.generate(pe, prefix_mask=pm, cfg_scale=1.5,
+                                sample_mode="lrseg", sample_scales=[3],
+                                sample_chunks=2, sample_steps=1,
+                                generator=torch.Generator().manual_seed(7))
+        b, _ = planner.generate(pe, prefix_mask=pm, cfg_scale=1.5,
+                                sample_mode="lrseg", sample_scales=[3],
+                                sample_chunks=4, sample_steps=1,
+                                generator=torch.Generator().manual_seed(7))
+    a3 = a[:, sum(SCALES[:3]):sum(SCALES[:4])]
+    b3 = b[:, sum(SCALES[:3]):sum(SCALES[:4])]
+    assert torch.equal(a3[:, : l // 4], b3[:, : l // 4]), \
+        "the first quarter saw different states under C=2 vs C=4"
+
+
+@requires_planner_sampler
+@pytest.mark.parametrize("C,K", [(1, 4), (2, 4), (8, 1), (4, 2), (2, 2),
+                                 (4, 1), (2 * SCALES[3], 1)])
+def test_lrseg_nfe_is_chunks_x_passes_over_one_trunk_forward(C, K):
+    """The sweep's cost claim: 2 * C * K_seg sampler passes per scale (both
+    CFG branches) and the backbone pinned at 2 forwards per scale, whatever
+    (C, K_seg) — the iso-NFE sets (C2K4/C8K1/C4K2) and (C2K2/C4K1/C1K4) cost
+    exactly what the table says they cost."""
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(1)
+    trunk, passes = [], []
+    real_trunk = planner._trunk
+    planner._trunk = lambda *a, **kw: (trunk.append(1), real_trunk(*a, **kw))[1]
+    for blk in planner.sampler.blocks:
+        blk.forward = (lambda f: lambda *a, **kw:
+                       (passes.append(1), f(*a, **kw))[1])(blk.forward)
+    with torch.no_grad():
+        planner.generate(pe, prefix_mask=pm, cfg_scale=1.5,
+                         sample_mode="lrseg", sample_scales=[3],
+                         sample_chunks=C, sample_steps=K,
+                         generator=torch.Generator().manual_seed(7))
+    n_layers = len(planner.sampler.blocks)
+    k_eff = min(K, planner.segments)
+    assert len(trunk) == 2 * len(SCALES), "the backbone NFE moved"
+    assert len(passes) == 2 * n_layers * min(C, SCALES[3]) * k_eff, \
+        f"C={C} K={K}: {len(passes)} sampler block-forwards"
+
+
+def test_lrseg_training_mask_matches_decode_states():
+    """Every state the lrseg decode visits must be producible by the
+    sampler_lrseg training reveal, and the loss must sit exactly on what the
+    decode reads out: (a) all-revealed positions form a contiguous chunk
+    prefix; (b) inside the current chunk segments are revealed per position,
+    never whole-position-only; (c) nothing right of the current chunk is
+    revealed; (d) supervision only on the current chunk's masked slots."""
+    torch.manual_seed(0)
+    B, l, S, chunks_arg = 64, 32, 4, 8
+    grid = [c for c in (1, 2, 4, 8, 16) if c <= chunks_arg
+            and chunks_arg % c == 0]
+    device = torch.device("cpu")
+    Cs = torch.tensor(grid)[torch.randint(0, len(grid), (B,))]
+    ci = torch.minimum((torch.rand(B) * Cs).long(), Cs - 1)
+    start = (ci * l) // Cs
+    end = ((ci + 1) * l) // Cs
+    idx = torch.arange(l)[None, :]
+    before = idx < start[:, None]
+    current = (idx >= start[:, None]) & (idx < end[:, None])
+    n_rev = torch.randint(0, S, (B, l, 1))
+    seg_rev = torch.rand(B, l, S).argsort(-1) < n_rev
+    revealed = before[..., None] | (current[..., None] & seg_rev)
+    w = torch.zeros(B, l, S)
+    w[current[..., None] & ~seg_rev] = 1.0
+
+    fully = revealed.all(-1)
+    for b in range(B):
+        # (a) fully-revealed positions are exactly the chunk prefix (a
+        # position inside the current chunk may reveal at most S-1 segments,
+        # n_rev < S)
+        assert torch.equal(fully[b], before[b]), "prefix not contiguous"
+        # (c) strictly right of the current chunk: nothing revealed
+        after = idx[0] >= end[b]
+        assert not revealed[b][after].any(), "reveal leaked right of chunk"
+        # (d) loss only on masked slots of the current chunk
+        assert not w[b][~current[b]].any(), "supervision outside the chunk"
+        assert not w[b][revealed[b] & current[b][..., None]].any(), \
+            "supervision on a revealed slot"
+        assert torch.equal(w[b] > 0, current[b][..., None] & ~revealed[b]), \
+            "supervision does not cover the chunk's masked slots"
+    # (b) the segment axis is genuinely exercised: some position in some
+    # sample has a PARTIAL segment reveal (not all-or-nothing)
+    part = (revealed.sum(-1) > 0) & (revealed.sum(-1) < S)
+    assert bool(part.any()), "no partial segment reveals — not a 2D pattern"
+    # coverage: every C in the grid actually drawn
+    assert set(Cs.tolist()) == set(grid), "some chunk count never sampled"

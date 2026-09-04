@@ -286,3 +286,31 @@ def test_cpu_smoke_two_steps_each_mode(tmp_path):
         losses[mode] = [r["loss"] for r in recs]
     # the arms optimise different objectives, so the logged loss must differ
     assert losses["token"] != losses["equal"] != losses["lognormal"]
+
+
+def test_interp_endpoints_are_the_registered_configurations():
+    """alpha=0 must reproduce lognormal exactly and alpha=1 the token
+    weighting's implicit l_k/sum(l) vector — the sweep axis is anchored at the
+    two configurations whose behaviour is already measured, or interpolating
+    between them means nothing."""
+    scales = [2 ** i for i in range(11)]
+    ln = scale_weight_vector("lognormal", 11, 1.98, 0.5)
+    a0 = scale_weight_vector("interp", 11, 1.98, 0.5, alpha=0.0, scales=scales)
+    assert torch.allclose(a0, ln, atol=1e-6), "alpha=0 is not lognormal"
+    tok = torch.tensor([float(l) for l in scales])
+    tok = tok / tok.sum()
+    a1 = scale_weight_vector("interp", 11, 1.98, 0.5, alpha=1.0, scales=scales)
+    assert torch.allclose(a1, tok, atol=1e-6), "alpha=1 is not token's l_k/sum"
+
+
+def test_interp_is_monotone_in_alpha_at_the_finest_scale():
+    """The whole point of alpha is buying back the finest scales' weight:
+    w(q1024) must increase monotonically with alpha, and every intermediate
+    alpha must sit strictly between the endpoints there."""
+    scales = [2 ** i for i in range(11)]
+    ws = [scale_weight_vector("interp", 11, 1.98, 0.5, alpha=a, scales=scales)
+          for a in (0.0, 0.25, 0.5, 0.75, 1.0)]
+    fin = [float(w[-1]) for w in ws]
+    assert all(b > a for a, b in zip(fin, fin[1:])), \
+        f"w(q1024) not monotone in alpha: {fin}"
+    assert all(abs(float(w.sum()) - 1.0) < 1e-5 for w in ws)
