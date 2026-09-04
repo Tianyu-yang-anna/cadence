@@ -5,6 +5,7 @@
 # candidate list silently falling back to OWT1 on a mirror failure).
 MAX_TOKENS="${MAX_TOKENS:-4e9}"
 DATA_OUT="${DATA_OUT:-owt_gpt2}"
+TOKENIZER="${TOKENIZER:-gpt2}"   # e.g. t5-small for the ELF baseline corpus
 SOURCE="${SOURCE:-}"
 export JOB_TAG="owtprep"
 source "$(dirname "${BASH_SOURCE[0]}")/bootstrap.sh"
@@ -50,7 +51,7 @@ while True:
       SPLITS="train"; [ "$part" = "0" ] && SPLITS="val,test,train"
       log "prep part docs [$RANGE) splits=$SPLITS"
       (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_owt.py \
-          --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT" \
+          --tokenizer "$TOKENIZER" --max_tokens "$MAX_TOKENS" --out "$OUT" \
           --splits "$SPLITS" --source "$SOURCE" --materialize \
           --doc_range "$RANGE") >> "$LOG_LOCAL" 2>&1
       rc=$?
@@ -67,7 +68,7 @@ while True:
     fi
   else
     (cd "$CODE" && env TOKENIZERS_PARALLELISM=true "$PY" data/prepare_owt.py \
-        --tokenizer gpt2 --max_tokens "$MAX_TOKENS" --out "$OUT" \
+        --tokenizer "$TOKENIZER" --max_tokens "$MAX_TOKENS" --out "$OUT" \
         ${SOURCE:+--source "$SOURCE"}) >> "$LOG_LOCAL" 2>&1
     rc=$?
   fi
