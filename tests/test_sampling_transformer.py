@@ -967,3 +967,27 @@ def test_two_pass_training_splice_matches_single_passes():
         assert torch.equal(both[:, starts[k]:starts[k + 1]],
                            only_pos[:, starts[k]:starts[k + 1]]), \
             f"splice changed the position band at scale {k}"
+
+
+def test_sampler_keep_accepts_an_empty_scale_list():
+    """The all-lrseg arm leaves the segment band empty; an empty python list
+    becomes a FLOAT tensor by default and IndexErrors as an index — the exact
+    b2s2f launch failure, now pinned."""
+    planner = activate_planner(make_planner(sampler=True))
+    torch.manual_seed(0)
+    B, L, S = 2, sum(SCALES), planner.segments
+    codes = torch.randint(0, planner.seg_vocab, (B, L, S))
+    pe, pm = rand_prefix(B, n_pad=3)
+    m_pos = torch.rand(B, L, S) < 0.3
+    planner.eval()
+    with torch.no_grad():
+        out = planner(codes, pe, prefix_mask=pm,
+                      cond_drop=torch.zeros(B, dtype=torch.bool),
+                      sampler_codes=codes, sampler_mask=m_pos,
+                      sampler_mode="position",
+                      sampler_scales=list(range(len(SCALES))))
+        empty = planner(codes, pe, prefix_mask=pm,
+                        cond_drop=torch.zeros(B, dtype=torch.bool),
+                        sampler_codes=codes, sampler_mask=m_pos,
+                        sampler_mode="position", sampler_scales=[])
+    assert out.shape == empty.shape

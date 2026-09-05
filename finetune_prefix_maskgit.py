@@ -357,6 +357,11 @@ def main():
                                      device=device)
                 smode, smode2 = "segment", "position"
                 scales1, scales2 = coarse_ids, fine_ids
+                if not coarse_ids:
+                    # every scale is in the lrseg band (the high-NFE all-2D
+                    # arm): run the position pass AS pass 1, no second pass
+                    smask, smode, scales1 = smask2, "position", fine_ids
+                    smask2, scales2 = None, None
                 for k in coarse_ids:
                     a, l = starts[k], scales[k]
                     w = weights[:, a:a + l]

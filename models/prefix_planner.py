@@ -460,7 +460,9 @@ class PrefixVARPlanner(nn.Module):
             hit = torch.zeros(K, device=ids.device).index_add_(0, ids, touched)
             return (hit > 0)[ids]
         sel = torch.zeros(K, dtype=torch.bool, device=ids.device)
-        sel[torch.as_tensor(sorted(set(sampler_scales)), device=ids.device)] = True
+        sel[torch.as_tensor(sorted(set(sampler_scales)), device=ids.device,
+                        dtype=torch.long)] = True  # empty list defaults to
+    # float dtype and IndexErrors — an all-lrseg band leaves pass 1 empty
         return sel[ids]
 
     def _sampler_ladder_logits(self, h_target, codes_flat, sampler_codes,
