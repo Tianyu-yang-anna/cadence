@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/elfgen/gens_lm1b_finalELFpre.jsonl",
+  "n": 1000,
+  "rouge1": 0.028167710472163078,
+  "rouge2": 0.003084793549509147,
+  "rougeL": 0.023504835388831077,
+  "distinct1": 0.16454820563552006,
+  "distinct2": 0.6226571728453304,
+  "ref_distinct2": 0.824236160454751,
+  "bertscore_f1": 0.779968798160553,
+  "mauve": 0.005426875487582518
+}

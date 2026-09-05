@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/elfgen/gens_sel_wikisource_ws32c2.jsonl",
+  "n": 250,
+  "rouge1": 0.20028485972544074,
+  "rouge2": 0.01595766912978251,
+  "rougeL": 0.11009280070109156,
+  "distinct1": 0.3592983499331054,
+  "distinct2": 0.8819146437797561,
+  "ref_distinct2": 0.6964641480626361,
+  "bertscore_f1": 0.7580575346946716,
+  "mauve": 0.013877303293550258
+}

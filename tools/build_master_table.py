@@ -137,6 +137,26 @@ GROUP_TITLE = {
 # They are reported separately from test because n=250 MAUVE has a measured
 # bootstrap sd of 3.2-5.3 -- see the caveat printed under each sweep.
 SEL_SWEEPS = [
+    ("修正后 2D（lrseg2，chunk 真条件）高 NFE 扫描（`b2s2e`）",
+     "benchgen_planner_prefix_owt2_pqsh_b2s2e",
+     [("seg粗K4 + 2D细C2K2（88）", "_e88"),
+      ("seg粗K4 + 2D细C4K2（112）", "_e112"),
+      ("seg粗K4 + 2D细C4K4（160）", "_e160a"),
+      ("seg粗K4 + 2D细C8K2（160）", "_e160b"),
+      ("seg粗K4 + 2D细C8K4（256）", "_e256"),
+      ("对照 seg:all:4 同臂（88，细带 OOD——细带只训过 position 约定）", "_esegall")],
+     "C8K2@160 首次在两个 sel 集上同时高于同臂对照（+3.1/+0.8，wiki 仍在噪声带内），"
+     "但 NFE 不单调、且 b2s2e 臂本身显著弱于主线臂（同解码 14.17 vs 22.89——混合训练"
+     "把细带监督摊薄）。分布内对照 lrseg2 C1K4（_e88b）补测中。"),
+    ("ELF（arXiv 2605.10938）sel 扫描 —— 原始权重（EMA 校准 bug 修正后）",
+     "benchgen_elf_owt2_t5_pre",
+     [("pre：ODE64 CFG2（未截断）", "_rs64c2"),
+      ("pre：ODE64 CFG1（未截断）", "_rs64c1"),
+      ("pre：ODE32 CFG2（未截断）", "_rs32c2")],
+     "**这些行按未截断协议打分（生成 ~1.9× 参考长度），与家族不可直接并读**；"
+     "全家一致的词数截断版（_w* tags）已重跑。定性结论已稳：预训练 T5 encoder 臂"
+     "流畅（样例语法通顺），随机 encoder 消融臂在 MAUVE 地板（0.7~1.3）——"
+     "起作用的是外部预训练嵌入空间。"),
     ("混合覆盖扫描（`b2s2dm`，粗带 seg + 细带 2D，全尺度覆盖）",
      "benchgen_planner_prefix_owt2_pqsh_b2s2dm",
      [("seg粗K2 + 2D细C2K1（44）", "_m44"),
