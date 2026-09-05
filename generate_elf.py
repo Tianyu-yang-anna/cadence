@@ -7,10 +7,9 @@ and follows the ODE/SDE rollout, and the final latent decodes through the DLM
 head. Output rows are our standard {index, prompt, reference, generated} so
 eval_generation.py scores them like every other system.
 
-Layout note, disclosed in the report: ELF's conditional protocol lays out the
-sequence as [cond | reference-length region | pad], so the generated
-continuation is roughly reference-length. Other family members generate to the
-window end and the eval truncates by words; both feed the same metrics.
+Protocol note: like every family member (generate.py run_benchmark), the
+generated text is word-truncated to the reference length before scoring, so
+ROUGE/MAUVE are not length-confounded.
 
 Usage:
   python generate_elf.py --run_dir runs/elf_owt2_t5_pre \
@@ -160,6 +159,12 @@ def main():
             for i in range(bsz):
                 text = tokenizer.decode(pred[i].detach().cpu().numpy(),
                                         skip_special_tokens=True)
+                # the family protocol (generate.py run_benchmark): generated
+                # text is WORD-TRUNCATED to the reference length so
+                # ROUGE/MAUVE are not length-confounded — without this ELF
+                # rows came out ~1.9x the reference and were incomparable
+                n_ref_words = len(str(batch["target"][i]).split())
+                text = " ".join(text.split()[:n_ref_words])
                 out_f.write(json.dumps({
                     "index": done, "prompt": batch["input"][i],
                     "reference": batch["target"][i],
