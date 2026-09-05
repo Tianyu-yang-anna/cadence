@@ -60,6 +60,15 @@ def main():
                     help="cond truncation in T5 tokens (~60% of the window "
                          "in GPT-2 tokens, +7% T5 inflation)")
     ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--use_ema", default="true", choices=["true", "false"],
+                    help="false = sample the raw weights. The paper's EMA "
+                         "decay 0.9999 is calibrated for its 95k-step runs; "
+                         "at the family's 7630 steps that EMA still holds "
+                         "~47%% of the RANDOM INIT (0.9999^7630 = 0.466) and "
+                         "decodes garbage — measured: raw weights reconstruct "
+                         "a clean latent at 100%%, the miscalibrated EMA at "
+                         "51%%. Runs whose training used a budget-rescaled "
+                         "decay can sample the EMA again.")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -95,8 +104,9 @@ def main():
         text_encoder_dim=enc_cfg.d_model, max_length=SEQ_LEN,
         bottleneck_dim=128, num_time_tokens=4, num_self_cond_cfg_tokens=4,
         num_model_mode_tokens=4, vocab_size=len(tokenizer)).to(device)
-    # sample from the EMA weights, as the paper's eval does
-    model.load_state_dict(payload["ema"])
+    # the paper's eval samples the EMA; see --use_ema for when not to
+    model.load_state_dict(payload["ema"] if args.use_ema == "true"
+                          else payload["model"])
     model.eval()
     print(f"[generate_elf] {run_dir.name} step {payload['step']} "
           f"encoder={payload['encoder_kind']} latent=({config.latent_mean:.3f},"
