@@ -59,8 +59,11 @@ def lrseg_reveal(B, l, S, chunks_arg, device):
     the state). Returns (revealed [B,l,S] bool, supervise [B,l,S] bool) where
     supervise = the current chunk's masked slots — exactly what the decode
     reads out."""
-    grid = [c for c in (1, 2, 4, 8, 16)
-            if c <= chunks_arg and chunks_arg % c == 0]
+    # per-scale grid: chunk counts that divide the arg grid AND fit the
+    # scale (short scales like q1/q2 simply train fewer chunk counts; with
+    # power-of-two ladders c <= l always divides l)
+    grid = [c for c in (1, 2, 4, 8, 16, 32)
+            if c <= chunks_arg and chunks_arg % c == 0 and c <= l]
     for c_ in grid:
         assert l % c_ == 0, f"scale l={l} not divisible by chunk count {c_}"
     Cs = torch.tensor(grid, device=device)[
