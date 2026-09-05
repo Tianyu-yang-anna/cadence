@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_lm1b_finalSEGA25.jsonl",
+  "n": 1000,
+  "rouge1": 0.0942597557451751,
+  "rouge2": 0.00356154143714969,
+  "rougeL": 0.0804790061105562,
+  "distinct1": 0.3782537467386688,
+  "distinct2": 0.8451004457076416,
+  "ref_distinct2": 0.824236160454751,
+  "bertscore_f1": 0.8167649507522583,
+  "mauve": 0.007455257379190958
+}

@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_wikipedia_finalSEGA25.jsonl",
+  "n": 1000,
+  "rouge1": 0.2498689388965008,
+  "rouge2": 0.029222623145488243,
+  "rougeL": 0.1311126909314932,
+  "distinct1": 0.24952231550433907,
+  "distinct2": 0.7178027092772359,
+  "ref_distinct2": 0.6965737767251371,
+  "bertscore_f1": 0.7781668901443481,
+  "mauve": 0.10283618063809574
+}

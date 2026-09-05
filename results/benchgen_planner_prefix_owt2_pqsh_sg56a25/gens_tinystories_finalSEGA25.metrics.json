@@ -1,0 +1,12 @@
+{
+  "gen_file": "/tmp/cadence_local/benchgen/gens_tinystories_finalSEGA25.jsonl",
+  "n": 1000,
+  "rouge1": 0.2925492082822794,
+  "rouge2": 0.02709344716596764,
+  "rougeL": 0.1620404330401747,
+  "distinct1": 0.13302474371713158,
+  "distinct2": 0.5692907784019822,
+  "ref_distinct2": 0.4462380099600128,
+  "bertscore_f1": 0.8179654479026794,
+  "mauve": 0.005601605673651392
+}

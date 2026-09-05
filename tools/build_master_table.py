@@ -79,6 +79,10 @@ ROWS = [
      "= seg:8,9,10:4 的同臂退化（逐比特等价有门禁测试）；24 采样器前向的注册数"),
 
     # ---- P1 HMAR scale reweighting --------------------------------------
+    ("hmar", "★α=0.25 插值全链（sg56a25，_finalSEGA25）",
+     "benchgen_planner_prefix_owt2_pqsh_sg56a25", "_finalSEGA25", 22, 88,
+     "w∝token^0.25·lognormal^0.75；R1/R2 四集全涨、MAUVE 近平 —— "
+     "token 与 lognormal 之间的新帕累托点；门控见 results/hmar_alpha/"),
     ("hmar", "波A token（hw76tk，单跑基座）",
      "benchgen_planner_prefix_owt2_pqsh_hw76tk", "_finalHWTK", 22, 0,
      "非主线：无 MaskGIT，隔离用"),
@@ -133,6 +137,14 @@ GROUP_TITLE = {
 # They are reported separately from test because n=250 MAUVE has a measured
 # bootstrap sd of 3.2-5.3 -- see the caveat printed under each sweep.
 SEL_SWEEPS = [
+    ("混合覆盖扫描（`b2s2dm`，粗带 seg + 细带 2D，全尺度覆盖）",
+     "benchgen_planner_prefix_owt2_pqsh_b2s2dm",
+     [("seg粗K2 + 2D细C2K1（44）", "_m44"),
+      ("seg粗K4 + 2D细C2K2（88，与主线 iso-NFE）", "_m88"),
+      ("seg粗K4 + 2D细C4K2（112）", "_m112"),
+      ("对照 seg:all:4 同臂（88）", "_msegall")],
+     "覆盖固定、NFE 匹配后 2D 仍输给纯段轴：m88 15.70 vs 同臂对照 19.09（wiki），"
+     "WS 同方向（17.84 vs 31.11）——两集一致，P0 方向就此彻底关闭。"),
     ("2D MaskGIT 扫描（`b2s2d`，lrseg:8,9,10:C:K，仅细尺度）",
      "benchgen_planner_prefix_owt2_pqsh_b2s2d",
      [("C=2 K=4（48，mentor 组1：段原样/位置粗）", "_2dc2k4"),
