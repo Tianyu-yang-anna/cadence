@@ -82,6 +82,37 @@ def lrseg_reveal(B, l, S, chunks_arg, device):
     return revealed, current[..., None] & ~seg_rev
 
 
+def build_lrseg2_masks(B, L_total, S, starts, scales, mask_scale_ids,
+                       lrseg_scale_ids, chunks_arg, weights, device):
+    """sampler_lrseg2's two-pass reveal builder, extracted so BOTH shapes —
+    mixed band and all-lrseg (empty segment band) — are exercised by unit
+    tests instead of by a cluster launch (two launches died on branch-only
+    code paths before this existed). Mutates `weights` in place and returns
+    (smask, smode, scales1, smask2, smode2, scales2)."""
+    coarse_ids = [k for k in mask_scale_ids if k not in lrseg_scale_ids]
+    fine_ids = sorted(lrseg_scale_ids)
+    m_seg = torch.zeros(B, L_total, S, dtype=torch.bool, device=device)
+    m_pos = torch.zeros(B, L_total, S, dtype=torch.bool, device=device)
+    for k in coarse_ids:
+        a, l = starts[k], scales[k]
+        w = weights[:, a:a + l]
+        n_rev = torch.randint(0, S, (B, l, 1), device=device)
+        rev = torch.rand(B, l, S, device=device).argsort(-1) < n_rev
+        m_seg[:, a:a + l] = rev
+        w[:] = 0.0
+        w[~rev] = 1.0
+    for k in fine_ids:
+        a, l = starts[k], scales[k]
+        w = weights[:, a:a + l]
+        revealed, sup = lrseg_reveal(B, l, S, chunks_arg, device)
+        m_pos[:, a:a + l] = revealed
+        w[:] = 0.0
+        w[sup] = 1.0
+    if coarse_ids:
+        return m_seg, "segment", coarse_ids, m_pos, "position", fine_ids
+    return m_pos, "position", fine_ids, None, "position", None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -341,43 +372,15 @@ def main():
                         w[:] = 0.0
                         w[~rev] = 1.0
             elif args.mask_mode == "sampler_lrseg2":
-                # 2D v2 ARM: the fine band's chunk-conditioned states run the
-                # POSITION convention (cross-position attention over per-slot
-                # commitments — the dependency v1 lacked), the coarse band
-                # keeps sampler_seg's segment convention. The two conventions
-                # NEVER blend inside one pass: forward() runs two sampler
-                # passes over the same trunk hidden and splices logits per
-                # scale band (the sampler_mix lesson, engineered around).
-                coarse_ids = [k for k in mask_scale_ids
-                              if k not in lrseg_scale_ids]
-                fine_ids = sorted(lrseg_scale_ids)
-                smask = torch.zeros(B, L_total, S, dtype=torch.bool,
-                                    device=device)
-                smask2 = torch.zeros(B, L_total, S, dtype=torch.bool,
-                                     device=device)
-                smode, smode2 = "segment", "position"
-                scales1, scales2 = coarse_ids, fine_ids
-                if not coarse_ids:
-                    # every scale is in the lrseg band (the high-NFE all-2D
-                    # arm): run the position pass AS pass 1, no second pass
-                    smask, smode, scales1 = smask2, "position", fine_ids
-                    smask2, scales2 = None, None
-                for k in coarse_ids:
-                    a, l = starts[k], scales[k]
-                    w = weights[:, a:a + l]
-                    n_rev = torch.randint(0, S, (B, l, 1), device=device)
-                    rev = torch.rand(B, l, S, device=device) \
-                        .argsort(-1) < n_rev
-                    smask[:, a:a + l] = rev
-                    w[:] = 0.0
-                    w[~rev] = 1.0
-                for k in fine_ids:
-                    a, l = starts[k], scales[k]
-                    w = weights[:, a:a + l]
-                    revealed, sup = lrseg_reveal(B, l, S, args.chunks, device)
-                    smask2[:, a:a + l] = revealed
-                    w[:] = 0.0
-                    w[sup] = 1.0
+                # 2D v2 ARM: fine band = chunk-conditioned POSITION convention
+                # (the dependency v1 lacked), coarse band = sampler_seg's
+                # segment convention; conventions never blend inside one pass
+                # (forward() splices two sampler passes per band). Logic lives
+                # in build_lrseg2_masks so both band shapes are unit-tested.
+                (smask, smode, scales1, smask2, smode2,
+                 scales2) = build_lrseg2_masks(
+                    B, L_total, S, starts, scales, mask_scale_ids,
+                    lrseg_scale_ids, args.chunks, weights, device)
             elif sampler_arm:
                 arm = args.mask_mode
                 if arm == "sampler_mix":

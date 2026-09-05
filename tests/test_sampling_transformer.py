@@ -991,3 +991,47 @@ def test_sampler_keep_accepts_an_empty_scale_list():
                         sampler_codes=codes, sampler_mask=m_pos,
                         sampler_mode="position", sampler_scales=[])
     assert out.shape == empty.shape
+
+
+@pytest.mark.parametrize("all_lrseg", [False, True])
+def test_lrseg2_mask_builder_both_band_shapes(all_lrseg):
+    """Both shapes of the sampler_lrseg2 arm must build and be consistent:
+    mixed band -> two passes with disjoint scale sets and disjoint reveals;
+    all-lrseg band -> ONE position pass, no None writes (the second failed
+    launch), and supervision confined to lrseg chunks."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "ft2", Path(__file__).resolve().parents[1] / "finetune_prefix_maskgit.py")
+    ft = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ft)
+    torch.manual_seed(0)
+    scales = [1, 2, 4, 8, 16, 32]
+    starts = [0]
+    for l in scales:
+        starts.append(starts[-1] + l)
+    B, S, L = 8, 4, sum(scales)
+    mask_ids = list(range(len(scales)))
+    lrseg_ids = set(mask_ids) if all_lrseg else {4, 5}
+    weights = torch.full((B, L, S), 0.5)
+    out = ft.build_lrseg2_masks(B, L, S, starts, scales, mask_ids, lrseg_ids,
+                                8, weights, torch.device("cpu"))
+    smask, smode, scales1, smask2, smode2, scales2 = out
+    if all_lrseg:
+        assert smode == "position" and smask2 is None and scales2 is None
+        assert set(scales1) == set(mask_ids)
+        assert smask.shape == (B, L, S)
+    else:
+        assert smode == "segment" and smode2 == "position"
+        assert set(scales1) == {0, 1, 2, 3} and set(scales2) == {4, 5}
+        # reveals confined to each pass's own band
+        for k in scales1:
+            a, l = starts[k], scales[k]
+            assert not smask2[:, a:a + l].any(), "pass-2 leaked into coarse"
+        for k in scales2:
+            a, l = starts[k], scales[k]
+            assert not smask[:, a:a + l].any(), "pass-1 leaked into fine"
+    # supervision exists and never lands on a revealed slot
+    m1 = smask if smask2 is None else (smask | smask2)
+    assert bool((weights == 1.0).any())
+    assert not bool(((weights == 1.0) & m1).any())
