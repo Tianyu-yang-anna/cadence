@@ -260,11 +260,37 @@ def main():
         inner = state.model.module if hasattr(state.model, "module") \
             else state.model
         torch.save({"model": inner.state_dict(), "ema": state.ema_params1,
+                    "optimizer": state.optimizer.state_dict(),
+                    "scheduler": state.lr_scheduler.state_dict(),
                     "step": state.step, "encoder_kind": args.encoder,
                     "latent_mean": config.latent_mean,
                     "latent_std": config.latent_std},
                    run_dir / f"ckpt_{tag}.pt")
         (run_dir / "latest.txt").write_text(f"ckpt_{tag}.pt\n")
+
+    # resume: platform preemption on a multi-hour job must not restart the
+    # budget from zero. Model/EMA/optimizer/scheduler/step all restore; the
+    # data order does not (the sampler reshuffles), so a resumed run may
+    # revisit some windows — consumed-token accounting is unchanged and the
+    # deviation is disclosed in the report if a resume actually happens.
+    latest = run_dir / "latest.txt"
+    if latest.exists():
+        ck = run_dir / latest.read_text().strip()
+        if ck.exists():
+            payload = torch.load(ck, map_location=device,
+                                 weights_only=False)
+            inner = state.model.module if hasattr(state.model, "module") \
+                else state.model
+            inner.load_state_dict(payload["model"])
+            state.ema_params1 = {k: v.to(device) for k, v in
+                                 payload["ema"].items()}
+            if "optimizer" in payload:
+                state.optimizer.load_state_dict(payload["optimizer"])
+                state.lr_scheduler.load_state_dict(payload["scheduler"])
+            state.step = int(payload["step"])
+            config.latent_mean = float(payload["latent_mean"])
+            config.latent_std = float(payload["latent_std"])
+            log0(f"resumed from {ck.name} at step {state.step}", rank)
 
     metrics_f = open(run_dir / "metrics.jsonl", "a") if rank == 0 else None
     opt_steps, t_last, win = 0, time.time(), {"loss": 0.0, "n": 0}

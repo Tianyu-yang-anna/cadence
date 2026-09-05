@@ -29,6 +29,19 @@ RUN_DIR="$LOCAL_ROOT/runs/$FULL_RUN_NAME"
 VCK="$VOL/checkpoints/$FULL_RUN_NAME"
 mkdir -p "$RUN_DIR" "$VCK"
 
+# resume: restore checkpoints + pointer from the Volume (resubmit-to-resume,
+# same convention as planner_entry.sh)
+latest=""
+[ -f "$VCK/latest.txt" ] && latest=$(tr -d '[:space:]' < "$VCK/latest.txt")
+if [ -n "$latest" ] && [ -f "$VCK/$latest" ]; then
+  log "resume: restoring ckpts from Volume"
+  for c in "$VCK"/ckpt_*.pt; do
+    [ -f "$c" ] && cp -f "$c" "$RUN_DIR/$(basename "$c")"
+  done
+  printf '%s\n' "$latest" > "$RUN_DIR/latest.txt"
+  [ -f "$VCK/metrics.jsonl" ] && cp -f "$VCK/metrics.jsonl" "$RUN_DIR/metrics.jsonl"
+fi
+
 sync_once() {
   for f in metrics.jsonl config.json; do
     [ -f "$RUN_DIR/$f" ] && cp -f "$RUN_DIR/$f" "$VCK/$f" 2>/dev/null
