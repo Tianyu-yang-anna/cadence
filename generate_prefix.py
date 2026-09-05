@@ -142,16 +142,17 @@ def main():
     def parse_one(spec):
         parts = spec.split(":")
         mode = parts[0]
-        assert mode in ("pos", "seg", "ar", "lr", "lrseg"), \
-            f"--sample_mode group must start with pos|seg|ar|lr|lrseg, " \
+        assert mode in ("pos", "seg", "ar", "lr", "lrseg", "lrseg2"), \
+            f"--sample_mode group must start with pos|seg|ar|lr|lrseg|lrseg2, " \
             f"got '{spec}'"
-        assert len(parts) == {"ar": 2, "lr": 4, "lrseg": 4}.get(mode, 3), \
+        assert len(parts) == {"ar": 2, "lr": 4, "lrseg": 4,
+                              "lrseg2": 4}.get(mode, 3), \
             "--sample_mode group is 'pos:<scales>:<K>' | 'seg:<scales>:<K>' | " \
             "'ar:<scales>' | 'lr:<scales>:<C>:<K>' | 'lrseg:<scales>:<C>:<Kseg>'"
         scales_g = (list(range(K)) if parts[1] == "all"
                     else [int(x) for x in parts[1].split(",")])
         steps_g, chunks_g = 0, 0
-        if mode in ("lr", "lrseg"):
+        if mode in ("lr", "lrseg", "lrseg2"):
             chunks_g, steps_g = int(parts[2]), int(parts[3])
             assert chunks_g > 0, f"--sample_mode {mode} needs C > 0"
             assert steps_g > 0, f"--sample_mode {mode} needs K > 0"

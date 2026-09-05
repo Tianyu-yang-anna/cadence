@@ -520,7 +520,10 @@ class PrefixVARPlanner(nn.Module):
                 sampler_codes: torch.Tensor | None = None,
                 sampler_mask: torch.Tensor | None = None,
                 sampler_mode: str = "position",
-                sampler_scales: list[int] | None = None) -> torch.Tensor:
+                sampler_scales: list[int] | None = None,
+                sampler_mask2: torch.Tensor | None = None,
+                sampler_mode2: str = "position",
+                sampler_scales2: list[int] | None = None) -> torch.Tensor:
         """Teacher-forced logits [B, sum(scales), S, N].
 
         codes_flat: [B, sum(scales), S] ground-truth PQ codes;
@@ -557,9 +560,30 @@ class PrefixVARPlanner(nn.Module):
         if self.sampler is None:
             assert sampler_mask is None, "planner built without a sampler"
             return self._head_logits_depth(h[:, P:], codes_flat)
-        return self._sampler_ladder_logits(h[:, P:], codes_flat, sampler_codes,
-                                           sampler_mask, sampler_mode,
-                                           sampler_scales)
+        logits = self._sampler_ladder_logits(h[:, P:], codes_flat,
+                                             sampler_codes, sampler_mask,
+                                             sampler_mode, sampler_scales)
+        if sampler_mask2 is not None:
+            # SECOND sampler group on the SAME trunk hidden: a mixed arm can
+            # supervise the segment convention on one scale band and the
+            # position convention on another WITHOUT blending the two input
+            # conventions inside one pass (the sampler_mix lesson). The
+            # second pass's logits replace the first's on ITS scale blocks;
+            # everywhere else pass 1 stands. Costs one extra 2L x 384 sampler
+            # forward — the 12L trunk is not recomputed.
+            logits2 = self._sampler_ladder_logits(h[:, P:], codes_flat,
+                                                  sampler_codes, sampler_mask2,
+                                                  sampler_mode2,
+                                                  sampler_scales2)
+            starts = [0]
+            for l in self.scales:
+                starts.append(starts[-1] + l)
+            out = logits.clone()
+            for k in (sampler_scales2 or []):
+                out[:, starts[k]:starts[k + 1]] = \
+                    logits2[:, starts[k]:starts[k + 1]]
+            logits = out
+        return logits
 
     # ------------------------------------------------------------ inference
 
@@ -630,11 +654,11 @@ class PrefixVARPlanner(nn.Module):
                                   sample_chunks2)):
             if not gm:
                 continue
-            assert gm in ("pos", "seg", "ar", "lr", "lrseg"), \
+            assert gm in ("pos", "seg", "ar", "lr", "lrseg", "lrseg2"), \
                 f"unknown sample_mode {gm}"
-            if gm in ("pos", "seg", "lr", "lrseg"):
+            if gm in ("pos", "seg", "lr", "lrseg", "lrseg2"):
                 assert gst > 0, f"sample_mode '{gm}' needs steps"
-            if gm in ("lr", "lrseg"):
+            if gm in ("lr", "lrseg", "lrseg2"):
                 assert gch > 0, f"sample_mode '{gm}' needs sample_chunks > 0"
             for k_ in (gs or []):
                 assert k_ not in route, \
@@ -989,6 +1013,57 @@ class PrefixVARPlanner(nn.Module):
                 done += sz
             return cur
 
+        def _sampler_lrseg2_scale(maps, k, seg_start, l):
+            """2D MaskGIT v2 — the version whose chunks actually CONDITION on
+            each other. v1 (_sampler_lrseg_scale) ran the segment convention,
+            whose attention lives inside one position's S slots, so chunk c
+            never saw chunk c-1's committed codes and the left-to-right walk
+            only narrowed the confidence schedule. Here every pass runs the
+            POSITION convention over per-slot commitments: the token at
+            position i carries its committed segments (mask token for open
+            ones) and attends the whole scale, so the current chunk is
+            conditioned on every previously committed chunk AND on its own
+            partial commits. Within the chunk the segment axis keeps the
+            confidence-ordered top-k schedule; the readout is the parallel
+            per-slot diagonal pick (depth frozen => no depth chain), so the
+            two axes stay a pure 2D MaskGIT.
+
+            Cost: 2 * min(C,l) * min(K_seg,S) sampler forwards per scale over
+            one cached trunk hidden; backbone unchanged."""
+            S = self.segments
+            steps = max(1, min(sample_steps, S))
+            C = max(1, min(sample_chunks, l))
+            base, rem = divmod(l, C)
+            sizes = [base + (1 if i < rem else 0) for i in range(C)]
+            h_c, h_u = _cached_hidden(maps, k, seg_start, l)
+            coords = coords_all[seg_start:seg_start + l]
+            cur = torch.zeros(B, l, S, dtype=torch.long, device=device)
+            committed = torch.zeros(B, l, S, dtype=torch.bool, device=device)
+            done = 0
+            for sz in sizes:
+                sl = slice(done, done + sz)
+                for j in range(steps):
+                    st_c, st_u = _sampler_states(h_c, h_u, k, cur, committed,
+                                                 "position", coords)
+                    lo = _sampler_readout_cfg(
+                        st_c[:, sl], None if st_u is None else st_u[:, sl],
+                        k, cur[:, sl], "position")
+                    s_codes, lp = _draw(lo, k)
+                    cur[:, sl] = torch.where(committed[:, sl], cur[:, sl],
+                                             s_codes)
+                    if j == steps - 1:
+                        break
+                    n_keep = max(1, min(S, int(round(S * (j + 1) / steps))))
+                    conf = torch.where(committed[:, sl],
+                                       torch.full_like(lp, float("inf")), lp)
+                    keep = conf.topk(n_keep, dim=-1, largest=True).indices
+                    nc = torch.zeros(B, sz, S, dtype=torch.bool, device=device)
+                    nc.scatter_(2, keep, True)
+                    committed[:, sl] = nc
+                committed[:, sl] = True
+                done += sz
+            return cur
+
         def _sampler_ar_cached(maps, k, seg_start, l):
             """_sampler_ar_scale at O(l) sampler token-forwards instead of
             O(l^2): once position i-1 is drawn the causal token stream of every
@@ -1070,6 +1145,7 @@ class PrefixVARPlanner(nn.Module):
                                "seg": _sampler_seg_scale,
                                "lr": _sampler_lr_scale,
                                "lrseg": _sampler_lrseg_scale,
+                               "lrseg2": _sampler_lrseg2_scale,
                                "ar": (_sampler_ar_cached if sample_cache
                                       else _sampler_ar_scale)}[mode_k](
                                    maps, k, seg_start, l)

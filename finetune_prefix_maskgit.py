@@ -100,7 +100,7 @@ def main():
                     choices=["bernoulli", "chunk_prefix", "none",
                              "sampler_pos", "sampler_seg", "sampler_causal",
                              "sampler_lr", "sampler_lrseg", "sampler_seg2d",
-                             "sampler_mix"],
+                             "sampler_lrseg2", "sampler_mix"],
                     help="bernoulli=MaskGIT random reveal; chunk_prefix=reveal "
                          "the first m of --chunks contiguous chunks (chunk-AR "
                          "training); none=plain CE continuation (no reveal); "
@@ -169,7 +169,10 @@ def main():
                     # (no causal shift; chunks refined bidirectionally inside)
                     "sampler_lrseg": "segment",
                     # the mixed arm is segment-convention at every scale too
-                    "sampler_seg2d": "segment"}.get(args.mask_mode, "position")
+                    "sampler_seg2d": "segment",
+                    # lrseg2's PASS-1 (coarse band) is segment; its fine band
+                    # rides pass 2 in position mode (see the branch below)
+                    "sampler_lrseg2": "segment"}.get(args.mask_mode, "position")
     sampler_arm = args.mask_mode.startswith("sampler_")
     use_sampler = args.sampler or cfg.planner.sampler
     assert use_sampler or not sampler_arm, \
@@ -193,7 +196,8 @@ def main():
     # segment-coupling mechanism under test.
     if not cfg.planner.depth_ar or args.mask_mode in ("sampler_seg",
                                                        "sampler_lrseg",
-                                                       "sampler_seg2d"):
+                                                       "sampler_seg2d",
+                                                       "sampler_lrseg2"):
         for p in planner.depth_projs.parameters():
             p.requires_grad_(False)
 
@@ -218,7 +222,7 @@ def main():
                       if args.mask_scales else [len(scales) - 2, len(scales) - 1])
     lrseg_scale_ids = set(int(x) for x in args.lrseg_scales.split(",")
                           if x != "")
-    if args.mask_mode == "sampler_seg2d":
+    if args.mask_mode in ("sampler_seg2d", "sampler_lrseg2"):
         assert lrseg_scale_ids <= set(mask_scale_ids), \
             "--lrseg_scales must be a subset of --mask_scales"
     if sampler_arm:
@@ -295,6 +299,8 @@ def main():
             weights = torch.full((B, L_total, S), args.retain_weight, device=device)
             vis_mask = torch.zeros(B, L_total, dtype=torch.bool, device=device)
             smask, smode = None, sampler_mode
+            smask2, smode2 = None, "position"
+            scales1, scales2 = mask_scale_ids, None
             if args.mask_mode == "none":
                 weights.fill_(1.0)  # plain CE continuation; reveal nothing
             elif args.mask_mode == "sampler_seg":
@@ -331,6 +337,39 @@ def main():
                         smask[:, a:a + l] = rev
                         w[:] = 0.0
                         w[~rev] = 1.0
+            elif args.mask_mode == "sampler_lrseg2":
+                # 2D v2 ARM: the fine band's chunk-conditioned states run the
+                # POSITION convention (cross-position attention over per-slot
+                # commitments — the dependency v1 lacked), the coarse band
+                # keeps sampler_seg's segment convention. The two conventions
+                # NEVER blend inside one pass: forward() runs two sampler
+                # passes over the same trunk hidden and splices logits per
+                # scale band (the sampler_mix lesson, engineered around).
+                coarse_ids = [k for k in mask_scale_ids
+                              if k not in lrseg_scale_ids]
+                fine_ids = sorted(lrseg_scale_ids)
+                smask = torch.zeros(B, L_total, S, dtype=torch.bool,
+                                    device=device)
+                smask2 = torch.zeros(B, L_total, S, dtype=torch.bool,
+                                     device=device)
+                smode, smode2 = "segment", "position"
+                scales1, scales2 = coarse_ids, fine_ids
+                for k in coarse_ids:
+                    a, l = starts[k], scales[k]
+                    w = weights[:, a:a + l]
+                    n_rev = torch.randint(0, S, (B, l, 1), device=device)
+                    rev = torch.rand(B, l, S, device=device) \
+                        .argsort(-1) < n_rev
+                    smask[:, a:a + l] = rev
+                    w[:] = 0.0
+                    w[~rev] = 1.0
+                for k in fine_ids:
+                    a, l = starts[k], scales[k]
+                    w = weights[:, a:a + l]
+                    revealed, sup = lrseg_reveal(B, l, S, args.chunks, device)
+                    smask2[:, a:a + l] = revealed
+                    w[:] = 0.0
+                    w[sup] = 1.0
             elif sampler_arm:
                 arm = args.mask_mode
                 if arm == "sampler_mix":
@@ -441,12 +480,15 @@ def main():
                     # a sampler arm leaves visible_mask None: the planner's
                     # own all-False fallback keeps the input-side pathway in
                     # the graph without perturbing the trunk
+                    any_smask = smask is not None or smask2 is not None
                     logits = model(codes, prefix_e, prefix_mask=pmask,
-                                   visible_codes=None if smask is not None else codes,
-                                   visible_mask=None if smask is not None else vis_mask,
-                                   sampler_codes=codes if smask is not None else None,
+                                   visible_codes=None if any_smask else codes,
+                                   visible_mask=None if any_smask else vis_mask,
+                                   sampler_codes=codes if any_smask else None,
                                    sampler_mask=smask, sampler_mode=smode,
-                                   sampler_scales=mask_scale_ids)
+                                   sampler_scales=scales1,
+                                   sampler_mask2=smask2, sampler_mode2=smode2,
+                                   sampler_scales2=scales2)
                     N = logits.shape[-1]
                     ce = F.cross_entropy(
                         logits.float().reshape(-1, N), codes.reshape(-1),

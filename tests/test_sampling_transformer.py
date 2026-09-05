@@ -859,3 +859,111 @@ def test_seg2d_training_mask_is_each_familys_pattern_on_its_band():
     # partial segment reveals exist (the 2D signature)
     part = (revealed.sum(-1) > 0) & (revealed.sum(-1) < S)
     assert bool(part.any())
+
+
+# ------------------------------- T11 chunk-CONDITIONED 2D ('lrseg2') decode
+
+@requires_planner_sampler
+def test_lrseg2_chunk1_sees_chunk0_and_v1_does_not():
+    """The mechanism fix, pinned from both sides: under the POSITION
+    convention (lrseg2) the sampler residual at chunk 1 must MOVE when chunk
+    0's committed codes change; under the SEGMENT convention (v1 lrseg) it
+    must NOT — segment-mode attention lives inside one position's S slots, so
+    v1's chunks were mutually independent, which is exactly what the mentor
+    flagged and what this version repairs."""
+    planner = activate_planner(make_planner(sampler=True))
+    from models.var_planner import scale_coordinates
+    k = 3
+    l = SCALES[k]
+    S = planner.segments
+    torch.manual_seed(0)
+    h = torch.randn(2, l, planner.d_model if hasattr(planner, "d_model")
+                    else planner.heads[0].in_features)
+    coords = scale_coordinates(SCALES, planner.seq_len,
+                               h.device)[sum(SCALES[:k]):sum(SCALES[:k]) + l]
+    half = l // 2
+    committed = torch.zeros(2, l, S, dtype=torch.bool)
+    committed[:, :half] = True
+    cur_a = torch.zeros(2, l, S, dtype=torch.long)
+    cur_b = cur_a.clone()
+    cur_b[:, :half] = torch.randint(1, planner.seg_vocab, (2, half, S))
+    with torch.no_grad():
+        za = planner._sampler_residual(h, k, cur_a, committed, "position", coords)
+        zb = planner._sampler_residual(h, k, cur_b, committed, "position", coords)
+        sa = planner._sampler_residual(h, k, cur_a, committed, "segment", coords)
+        sb = planner._sampler_residual(h, k, cur_b, committed, "segment", coords)
+    assert not torch.allclose(za[:, half:], zb[:, half:], atol=1e-5), \
+        "lrseg2's position convention is blind to the previous chunk"
+    if sa.dim() == 4:  # segment mode returns per-slot residuals [B, l, S, d]
+        sa, sb = sa[:, half:], sb[:, half:]
+    else:
+        sa, sb = sa[:, half:], sb[:, half:]
+    assert torch.allclose(sa, sb, atol=1e-6), \
+        "segment mode saw the previous chunk — v1's documented independence broke"
+
+
+@requires_planner_sampler
+@pytest.mark.parametrize("C,K", [(2, 2), (2, 4), (4, 2), (4, 4), (8, 2)])
+def test_lrseg2_nfe_is_chunks_x_passes_over_one_trunk_forward(C, K):
+    planner = activate_planner(make_planner(sampler=True))
+    pe, pm = rand_prefix(1)
+    trunk, passes = [], []
+    real_trunk = planner._trunk
+    planner._trunk = lambda *a, **kw: (trunk.append(1), real_trunk(*a, **kw))[1]
+    for blk in planner.sampler.blocks:
+        blk.forward = (lambda f: lambda *a, **kw:
+                       (passes.append(1), f(*a, **kw))[1])(blk.forward)
+    with torch.no_grad():
+        planner.generate(pe, prefix_mask=pm, cfg_scale=1.5,
+                         sample_mode="lrseg2", sample_scales=[3],
+                         sample_chunks=C, sample_steps=K,
+                         generator=torch.Generator().manual_seed(7))
+    n_layers = len(planner.sampler.blocks)
+    k_eff = min(K, planner.segments)
+    assert len(trunk) == 2 * len(SCALES), "the backbone NFE moved"
+    assert len(passes) == 2 * n_layers * min(C, SCALES[3]) * k_eff
+
+
+@requires_planner_sampler
+def test_two_pass_training_splice_matches_single_passes():
+    """forward() with a second sampler group must return, on each band,
+    exactly what a single-pass call with that band's (mask, mode) returns —
+    the splice may not perturb either convention."""
+    planner = activate_planner(make_planner(sampler=True))
+    torch.manual_seed(3)
+    B = 2
+    L = sum(SCALES)
+    S = planner.segments
+    codes = torch.randint(0, planner.seg_vocab, (B, L, S))
+    pe, pm = rand_prefix(B, n_pad=4)
+    n = len(SCALES)
+    coarse, fine = list(range(n - 2)), [n - 2, n - 1]
+    m_seg = torch.rand(B, L, S) < 0.4
+    m_pos = torch.rand(B, L, S) < 0.3
+    planner.eval()
+    with torch.no_grad():
+        both = planner(codes, pe, prefix_mask=pm,
+                       cond_drop=torch.zeros(B, dtype=torch.bool),
+                       sampler_codes=codes, sampler_mask=m_seg,
+                       sampler_mode="segment", sampler_scales=coarse,
+                       sampler_mask2=m_pos, sampler_mode2="position",
+                       sampler_scales2=fine)
+        only_seg = planner(codes, pe, prefix_mask=pm,
+                           cond_drop=torch.zeros(B, dtype=torch.bool),
+                           sampler_codes=codes, sampler_mask=m_seg,
+                           sampler_mode="segment", sampler_scales=coarse)
+        only_pos = planner(codes, pe, prefix_mask=pm,
+                           cond_drop=torch.zeros(B, dtype=torch.bool),
+                           sampler_codes=codes, sampler_mask=m_pos,
+                           sampler_mode="position", sampler_scales=fine)
+    starts = [0]
+    for l in SCALES:
+        starts.append(starts[-1] + l)
+    for k in coarse:
+        assert torch.equal(both[:, starts[k]:starts[k + 1]],
+                           only_seg[:, starts[k]:starts[k + 1]]), \
+            f"splice changed the segment band at scale {k}"
+    for k in fine:
+        assert torch.equal(both[:, starts[k]:starts[k + 1]],
+                           only_pos[:, starts[k]:starts[k + 1]]), \
+            f"splice changed the position band at scale {k}"
